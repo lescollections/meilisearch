@@ -1,0 +1,41 @@
+#!/bin/bash
+# Lance les scripts de test du dépôt, dans l'instance.
+#
+# Les tests ne passent pas par l'interface : chaque script fait un `require` de setup.php et
+# parle directement au connecteur, comme le ferait CollectiveAccess. C'est la boucle la plus
+# courte qui reste adossée à une instance réelle — pas de stub, pas de faux Configuration, pas
+# de faux Db.
+#
+# Usage : dev-test              → tous les tests
+#         dev-test recherche    → tests/recherche.php seulement
+set -euo pipefail
+
+TESTS=/opt/meilisearch/tests
+
+if [ ! -d "$TESTS" ]; then
+    printf '\033[31m[test]\033[0m %s\n' "répertoire des tests introuvable ($TESTS)" >&2
+    exit 1
+fi
+
+run() {
+    printf '\033[36m[test]\033[0m %s\n' "$(basename "$1")"
+    su -s /bin/bash www-data -c "cd /var/www/html && php $(printf '%q' "$1")"
+}
+
+status=0
+if [ $# -gt 0 ]; then
+    for name in "$@"; do
+        f="$TESTS/${name%.php}.php"
+        [ -f "$f" ] || { printf '\033[31m[test]\033[0m %s\n' "inconnu : $name" >&2; exit 1; }
+        run "$f" || status=1
+    done
+else
+    # Les fichiers préfixés d'un souligné sont des dépendances (le cadre), pas des tests.
+    for f in "$TESTS"/*.php; do
+        [ -f "$f" ] || continue
+        case "$(basename "$f")" in _*) continue ;; esac
+        run "$f" || status=1
+    done
+fi
+
+exit $status

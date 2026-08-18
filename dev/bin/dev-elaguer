@@ -1,0 +1,12 @@
+#!/bin/bash
+# Élagage de search_indexing.conf — raccourci sur l'outil livré avec le greffon.
+#
+#   dev-elaguer --simuler    → ce qui serait retiré, et ce qu'on perdrait
+#   dev-elaguer              → écrit app/conf/local/search_indexing.conf
+#   dev-elaguer --defaire    → revient à la configuration livrée
+#
+# Après application, réindexer : dev-reindex
+set -euo pipefail
+
+su -s /bin/bash www-data -c \
+    "cd /var/www/html && php app/plugins/Meilisearch/tools/elaguer-indexation.php $*"

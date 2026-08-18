@@ -1,0 +1,43 @@
+#!/bin/bash
+# Installe le greffon dans l'arborescence de Providence — la vraie procédure d'installation,
+# celle qu'on documentera pour la production.
+#
+# Le dépôt est monté en lecture-écriture sous /opt/meilisearch/plugin, hors de l'arborescence
+# du socle. On y pose des liens symboliques. C'est plus fidèle qu'un bind-mount direct, et ça
+# évite un piège de Docker : un bind-mount de *fichier* ne suit pas les remplacements d'inode,
+# et un éditeur qui enregistre en écrivant un fichier temporaire puis en le renommant — ce que
+# font VS Code et la plupart des autres — fait exactement ça. On éditerait alors sans que le
+# conteneur ne voie rien changer.
+#
+#   MeilisearchSearchEngine/Meilisearch.php  →  app/lib/Plugins/SearchEngine/Meilisearch.php
+#   MeilisearchSearchEngine/                 →  app/lib/Plugins/SearchEngine/Meilisearch/
+#   MeilisearchSearchEngine/Meilisearch…Settings.php
+#                                            →  app/lib/Plugins/SearchEngine/MeilisearchConfigurationSettings.php
+#   MeilisearchAppPlugin/                    →  app/plugins/Meilisearch/
+#
+# Le connecteur est donc atteignable par deux chemins : `Meilisearch.php` (celui que cherche
+# SearchBase::newSearchEngine) et `Meilisearch/Meilisearch.php`. Sans conséquence : require_once
+# résout les chemins avant de comparer, le fichier n'est chargé qu'une fois.
+set -euo pipefail
+
+log()  { printf '\033[36m[dev]\033[0m %s\n' "$*"; }
+fail() { printf '\033[31m[dev]\033[0m %s\n' "$*" >&2; exit 1; }
+
+SRC=/opt/meilisearch/plugin
+ENGINE_DIR=/var/www/html/app/lib/Plugins/SearchEngine
+PLUGIN_DIR=/var/www/html/app/plugins
+
+[ -f "$SRC/MeilisearchSearchEngine/Meilisearch.php" ] \
+    || fail "connecteur introuvable en $SRC/MeilisearchSearchEngine/ — le dépôt est-il bien monté ?"
+[ -f "$SRC/MeilisearchAppPlugin/MeilisearchPlugin.php" ] \
+    || fail "greffon applicatif introuvable en $SRC/MeilisearchAppPlugin/"
+
+ln -sfn "$SRC/MeilisearchSearchEngine/Meilisearch.php"                        "$ENGINE_DIR/Meilisearch.php"
+ln -sfn "$SRC/MeilisearchSearchEngine"                                        "$ENGINE_DIR/Meilisearch"
+ln -sfn "$SRC/MeilisearchSearchEngine/MeilisearchConfigurationSettings.php"   "$ENGINE_DIR/MeilisearchConfigurationSettings.php"
+ln -sfn "$SRC/MeilisearchAppPlugin"                                           "$PLUGIN_DIR/Meilisearch"
+
+log "greffon lié :"
+log "  $ENGINE_DIR/Meilisearch.php"
+log "  $ENGINE_DIR/Meilisearch/"
+log "  $PLUGIN_DIR/Meilisearch/"

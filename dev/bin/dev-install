@@ -1,0 +1,60 @@
+#!/bin/bash
+# Installe CollectiveAccess dans une base vide. Idempotent : ne fait rien si le schéma existe
+# déjà. `dev-install --force` repart de zéro (toutes les données sont perdues).
+set -euo pipefail
+
+log()  { printf '\033[36m[dev]\033[0m %s\n' "$*"; }
+warn() { printf '\033[33m[dev]\033[0m %s\n' "$*" >&2; }
+
+DB_HOST="${CA_DB_HOST:-db}"
+DB_PORT="${CA_DB_PORT:-3306}"
+DB_USER="${CA_DB_USER:-collectiveaccess}"
+DB_PASSWORD="${CA_DB_PASSWORD:-collectiveaccess}"
+DB_DATABASE="${CA_DB_DATABASE:-collectiveaccess}"
+PROFILE="${CA_PROFILE:-default}"
+ADMIN_EMAIL="${CA_ADMIN_EMAIL:-dev@meilisearch.test}"
+
+force=0
+[ "${1:-}" = "--force" ] && force=1
+
+query() {
+    mariadb --host="$DB_HOST" --port="$DB_PORT" --user="$DB_USER" \
+            --password="$DB_PASSWORD" --database="$DB_DATABASE" \
+            --batch --skip-column-names --execute="$1"
+}
+
+if [ "$force" = "0" ] && [ "$(query "SHOW TABLES LIKE 'ca_locales'" | wc -l)" -gt 0 ]; then
+    log "base déjà installée — rien à faire (dev-install --force pour repartir de zéro)"
+    exit 0
+fi
+
+log "installation de CollectiveAccess (profil « ${PROFILE} »)…"
+
+install_args=(
+    install
+    --profile-name="$PROFILE"
+    --profile-directory=/var/www/html/install/profiles/xml
+    --admin-email="$ADMIN_EMAIL"
+)
+[ "$force" = "1" ] && install_args+=(--overwrite)
+
+su -s /bin/bash www-data -c \
+    "cd /var/www/html && ./support/bin/caUtils $(printf '%q ' "${install_args[@]}")"
+
+# Le profil ne définit aucun login : l'installeur crée « administrator » avec un mot de passe
+# tiré au hasard, qui disparaît du terminal au premier `docker compose up -d`. On le fixe.
+ADMIN_USER="${CA_ADMIN_USER:-administrator}"
+ADMIN_PASSWORD="${CA_ADMIN_PASSWORD:-collections}"
+su -s /bin/bash www-data -c \
+    "cd /var/www/html && ./support/bin/caUtils reset-password \
+        --user=$(printf '%q' "$ADMIN_USER") \
+        --password=$(printf '%q' "$ADMIN_PASSWORD")" \
+    || warn "impossible de fixer le mot de passe de « ${ADMIN_USER} » — voir le mot de passe tiré ci-dessus"
+
+# Le corpus. Par défaut sans les images : elles pèsent l'essentiel du temps de chargement et
+# ne disent rien d'un moteur de recherche. CA_SEED_CLEVELAND_MEDIA=1 pour les avoir.
+if [ "${CA_SEED_CLEVELAND:-1}" = "1" ]; then
+    dev-seed-cleveland "${CA_SEED_CLEVELAND_COUNT:-2500}"
+fi
+
+log "installé — connexion : ${ADMIN_USER} / ${ADMIN_PASSWORD}"

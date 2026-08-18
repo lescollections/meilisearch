@@ -1,0 +1,10 @@
+#!/bin/bash
+# Charge le jeu d'exemple « cleveland » de rochambeau (2500 objets avec images par défaut).
+# Idempotent : un objet dont l'idno existe déjà est laissé tel quel.
+#
+# Usage : dev-seed-cleveland [nombre]
+set -euo pipefail
+
+printf '\033[36m[dev]\033[0m %s\n' "chargement du jeu d'exemple cleveland…"
+su -s /bin/bash www-data -c \
+    "cd /var/www/html && php /opt/meilisearch/seed-cleveland.php ${1:-}"

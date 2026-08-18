@@ -1,0 +1,10 @@
+#!/bin/bash
+# Charge le corpus complet du Cleveland Museum of Art (68 953 œuvres, sans images).
+# Idempotent. Usage : dev-seed-cma [nombre]
+#
+# Le CSV pèse 131 Mo : le premier appel le télécharge et le garde en cache dans app/tmp.
+set -euo pipefail
+
+printf '\033[36m[dev]\033[0m %s\n' "chargement du corpus CMA…"
+su -s /bin/bash www-data -c \
+    "cd /var/www/html && php /opt/meilisearch/seed-cma.php ${1:-}"
