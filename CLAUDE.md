@@ -223,6 +223,12 @@ chiffres à 71 000 fiches sont ci-dessus.
 - **Le fork attend des méthodes hors interface** : `flushContentBuffer()` (appelée sans
   `method_exists()` en fin de réindexation, son absence tue `rebuild-search-index` *après* avoir
   tout indexé) et l'option `useAsync`.
+- **Et nos outils attendaient une méthode du fork.** `SearchIndexer::getFieldDataForReindex()`
+  n'existe que dans `lescollections/providence` : sur préprod-130.32, `tools/reindexer.php`
+  mourait dès la première tranche. Le repli vit dans `tools/_socle.php` (lecture directe de la
+  table) et `CA_SANS_FIELD_DATA_FORK=1` le force là où la méthode existe, sans quoi il ne serait
+  jamais éprouvé. `tests/compatibilite-socle.php` compare les index produits par les deux
+  chemins. **Lancer `tools/verifier-socle.php` avant toute bascule sur une instance inconnue.**
 - **Modifier une étiquette ne réindexe pas tout de suite** : l'entrée part dans
   `ca_search_indexing_queue`, qu'il faut traiter. Rien de propre au connecteur.
 - **La file de réindexation n'est pas parallélisable** en l'état : verrou de fichier exclusif

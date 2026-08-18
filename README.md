@@ -116,6 +116,7 @@ qu'il sait parler à Meilisearch, pas qu'il s'insère dans la chaîne.
 tests/_cadre.php                    assertions, déroulé, raccourcis
 tests/recherche-simple.php          titre, numéro d'inventaire, filtres, mise à jour
 tests/recherche-booleens.php        les opérateurs rendent-ils ce qu'ils promettent ?
+tests/compatibilite-socle.php       les outils tiennent-ils hors du fork lescollections ?
 tests/reindexation-parallele.php    le réindexeur parallèle rend-il le même index ?
 ```
 
@@ -128,7 +129,15 @@ tools/elaguer-indexation.php      réduit ce qui est indexé, et dit ce qu'on pe
 tools/mesurer-indexation.php      où passe le temps d'une réindexation
 tools/mesurer-recherche.php       où passe le temps d'une recherche
 tools/diagnostiquer-recherches.php  quelles recherches le connecteur rend-il mal ?
+tools/verifier-socle.php          cette instance peut-elle recevoir le connecteur ?
 ```
+
+**`tools/verifier-socle.php`** se lance sur l'instance visée **avant** de basculer
+`search_engine_plugin` : liens en place, connecteur instanciable, méthodes hors interface
+présentes, moteur joignable, journal écrivable, historique de recherches exploitable. Le
+connecteur a été écrit contre le fork `lescollections/providence` et touche des points qu'aucune
+interface ne garantit — mieux vaut trente secondes de vérification que la découverte au milieu
+d'une réindexation de plusieurs centaines de milliers de fiches.
 
 **`tools/diagnostiquer-recherches.php`** vérifie ce qui se vérifie sans référence : les identités
 booléennes (`a AND b` doit rendre l'intersection de `a` et de `b`, `a OR b` leur union), le
@@ -249,8 +258,17 @@ chercher chez Meilisearch, et c'est un écart assumé par rapport à `SqlSearch2
 
 ### Le contrat, tel qu'il est vraiment
 
-`IWLPlugSearchEngine` ne suffit pas. Le fork `lescollections/providence` appelle en plus, sans
-`method_exists()` :
+La dépendance joue dans les deux sens, et les deux sens ont mordu.
+
+**Ce que les outils du greffon demandaient au socle** : `SearchIndexer::getFieldDataForReindex()`
+n'existe que dans le fork. Sur une autre instance, `tools/reindexer.php` mourait à la première
+tranche (« Call to undefined method »). Les outils passent maintenant par
+`tools/_socle.php`, qui lit la table lui-même quand la méthode manque ;
+`tests/compatibilite-socle.php` vérifie que ce repli écrit **le même index**, document par
+document, et non pas seulement qu'il s'exécute.
+
+**Ce que le fork demande au connecteur.** `IWLPlugSearchEngine` ne suffit pas : le fork
+`lescollections/providence` appelle en plus, sans `method_exists()` :
 
 - `flushContentBuffer()` — `SearchIndexer.php:322`, en fin de réindexation complète. Son absence
   fait mourir `rebuild-search-index` sur une erreur fatale *après* avoir tout indexé, ce qui
