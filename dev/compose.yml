@@ -1,0 +1,119 @@
+# Harnais de développement du connecteur Meilisearch pour CollectiveAccess.
+#
+#   cd dev && docker compose up        → http://localhost:8089/gestion/index.php
+#
+# Trois services : la base, l'application, et le moteur. Le moteur rejoint les deux autres dans
+# le réseau du projet ; le connecteur l'atteint par son nom de service, `meilisearch`.
+#
+# Le dépôt est monté sous /opt/meilisearch/plugin, hors de l'arborescence de Providence :
+# l'entrypoint y pose des liens symboliques (voir bin/dev-link-plugin). Détour volontaire —
+# un bind-mount de *fichier* ne suit pas les remplacements d'inode, et c'est exactement ce que
+# fait un éditeur quand il enregistre.
+
+name: meilisearch-dev
+
+services:
+  db:
+    image: mariadb:11.4
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: ${CA_DB_DATABASE:-collectiveaccess}
+      MARIADB_USER: ${CA_DB_USER:-collectiveaccess}
+      MARIADB_PASSWORD: ${CA_DB_PASSWORD:-collectiveaccess}
+      MARIADB_ROOT_PASSWORD: ${CA_DB_ROOT_PASSWORD:-root}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_general_ci
+      # CollectiveAccess écrit des enregistrements larges (attributs, index de recherche).
+      - --max_allowed_packet=256M
+      - --innodb_buffer_pool_size=512M
+    volumes:
+      - db:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mariadb-admin", "ping", "--host=localhost", "--user=root", "--password=${CA_DB_ROOT_PASSWORD:-root}", "--silent"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+      start_period: 20s
+
+  meilisearch:
+    image: getmeili/meilisearch:${MEILISEARCH_VERSION:-v1.13}
+    restart: unless-stopped
+    environment:
+      # Sans clé maîtresse, Meilisearch démarre en mode développement et n'exige aucune
+      # authentification. Acceptable ici — le service n'est pas publié sur l'hôte par défaut
+      # et la base est jetable. Poser MEILI_MASTER_KEY pour éprouver le chemin authentifié.
+      MEILI_ENV: development
+      MEILI_MASTER_KEY: ${CA_MEILISEARCH_API_KEY:-}
+      MEILI_NO_ANALYTICS: "true"
+      MEILI_LOG_LEVEL: ${MEILISEARCH_LOG_LEVEL:-INFO}
+    ports:
+      # Ouvert sur 127.0.0.1 seulement : pratique pour interroger l'index à la main
+      # (curl http://localhost:7700/indexes) sans passer par le conteneur applicatif.
+      - "127.0.0.1:${MEILISEARCH_HOST_PORT:-7700}:7700"
+    volumes:
+      - meili:/meili_data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:7700/health"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      meilisearch:
+        # `started` et non `healthy` : le harnais doit démarrer moteur éteint, c'est un des cas
+        # à éprouver. L'entrypoint attend le moteur un moment, puis passe outre.
+        condition: service_started
+    ports:
+      # 8089 — 8088 est pris par le harnais du greffon lescollections, 8080 par un Apache ou un
+      # MAMP local. La collision est sournoise : localhost résout ::1 en premier, on tombe sur
+      # l'autre serveur sans que Docker ne se plaigne.
+      - "127.0.0.1:${CA_HOST_PORT:-8089}:80"
+    environment:
+      CA_DB_HOST: db
+      CA_DB_PORT: "3306"
+      CA_DB_DATABASE: ${CA_DB_DATABASE:-collectiveaccess}
+      CA_DB_USER: ${CA_DB_USER:-collectiveaccess}
+      CA_DB_PASSWORD: ${CA_DB_PASSWORD:-collectiveaccess}
+      CA_SITE_HOSTNAME: localhost:${CA_HOST_PORT:-8089}
+      CA_HOST_PORT: ${CA_HOST_PORT:-8089}
+      CA_ADMIN_EMAIL: ${CA_ADMIN_EMAIL:-dev@meilisearch.test}
+      CA_ADMIN_USER: ${CA_ADMIN_USER:-administrator}
+      CA_ADMIN_PASSWORD: ${CA_ADMIN_PASSWORD:-collections}
+      CA_PROFILE: ${CA_PROFILE:-default}
+
+      CA_MEILISEARCH_URL: ${CA_MEILISEARCH_URL:-http://meilisearch:7700}
+      CA_MEILISEARCH_API_KEY: ${CA_MEILISEARCH_API_KEY:-}
+      CA_MEILISEARCH_INDEX_PREFIX: ${CA_MEILISEARCH_INDEX_PREFIX:-ca}
+
+      CA_AUTO_INSTALL: ${CA_AUTO_INSTALL:-1}
+      # Le corpus complet : 250 objets ne disent rien du comportement à 2500. Sans les images
+      # par défaut — elles pèsent l'essentiel du temps de chargement et n'apprennent rien sur
+      # un moteur de recherche.
+      CA_SEED_CLEVELAND: ${CA_SEED_CLEVELAND:-1}
+      CA_SEED_CLEVELAND_COUNT: ${CA_SEED_CLEVELAND_COUNT:-2500}
+      CA_SEED_CLEVELAND_MEDIA: ${CA_SEED_CLEVELAND_MEDIA:-0}
+      # Le corpus arrive public : les filtres d'accès de CollectiveAccess l'écarteraient sinon
+      # entièrement des résultats de recherche.
+      CA_SEED_ACCESS: ${CA_SEED_ACCESS:-1}
+    volumes:
+      # Le dépôt, hors de l'arborescence du socle. dev-link-plugin y pose les liens.
+      - ..:/opt/meilisearch/plugin
+      # Les tests, atteignables par `docker compose exec app dev-test`.
+      - ../tests:/opt/meilisearch/tests
+      - media:/var/www/html/media
+      - uploads:/var/www/html/uploads
+
+volumes:
+  db:
+  meili:
+  media:
+  uploads:

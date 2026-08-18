@@ -1,0 +1,12 @@
+#!/bin/bash
+# Réindexation parallèle — raccourci sur l'outil livré avec le greffon.
+#
+#   dev-reindex                      → toutes les tables, un processus par cœur (au plus 8)
+#   dev-reindex --processus=4
+#   dev-reindex --tables=ca_objects
+#
+# L'équivalent du socle, séquentiel, reste disponible : caUtils rebuild-search-index
+set -euo pipefail
+
+su -s /bin/bash www-data -c \
+    "cd /var/www/html && php app/plugins/Meilisearch/tools/reindexer.php $*"

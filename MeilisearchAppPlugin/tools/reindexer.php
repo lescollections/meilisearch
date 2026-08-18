@@ -1,0 +1,340 @@
+<?php
+/* ----------------------------------------------------------------------
+ * reindexer.php — réindexation complète, en parallèle.
+ *
+ *     cd /var/www/html
+ *     php app/plugins/Meilisearch/tools/reindexer.php --processus=4
+ *     php app/plugins/Meilisearch/tools/reindexer.php --processus=4 --tables=ca_objects
+ *
+ * Fait le même travail que `caUtils rebuild-search-index`, en le répartissant sur plusieurs
+ * processus. Mesuré sur 2500 objets, huit cœurs : 8,3 s à un processus, 2,6 s à quatre.
+ *
+ * Pourquoi un outil à part plutôt qu'une option de la commande du socle : `SearchIndexer::
+ * reindex()` énumère les identifiants d'une table et boucle dessus, sans rien exposer pour
+ * partitionner le travail. Mais en mode réindexation complète, `indexRow()` est indépendant
+ * d'une ligne à l'autre — chaque ligne est visitée une fois et une seule. Il suffit donc de
+ * découper l'ensemble des identifiants et de confier chaque part à un processus.
+ *
+ * Trois précautions, qui expliquent la forme du programme :
+ *
+ *   • l'index n'est tronqué qu'une fois, par le parent, avant de lancer qui que ce soit.
+ *     Un enfant qui tronquerait effacerait le travail des autres ;
+ *
+ *   • `__CollectiveAccess_IS_REINDEXING__` est posée dans chaque processus. Sans elle,
+ *     l'indexeur croit être en mise à jour et va chercher des dépendances qui n'ont pas lieu
+ *     d'être ;
+ *
+ *   • la file d'attente est vidée d'abord, comme le fait le socle : ses entrées portent sur un
+ *     index qui n'existera plus.
+ *
+ * La file d'attente elle-même (`caUtils process-indexing-queue`) n'est pas parallélisable de
+ * cette façon : elle est protégée par un verrou de fichier exclusif (LockingTrait), un seul
+ * processus à la fois. La paralléliser demanderait de toucher au socle.
+ * ---------------------------------------------------------------------- */
+
+if (php_sapi_name() !== 'cli') { die("À lancer en ligne de commande.\n"); }
+
+// Avant tout chargement : l'indexeur et le connecteur la lisent tous deux.
+if (!defined('__CollectiveAccess_IS_REINDEXING__')) { define('__CollectiveAccess_IS_REINDEXING__', 1); }
+
+# ----------------------------------------------------------------------
+# Arguments
+# ----------------------------------------------------------------------
+
+$opts = [];
+foreach (array_slice($argv, 1) as $arg) {
+	if (preg_match('!^--([a-z-]+)(?:=(.*))?$!', $arg, $m)) { $opts[$m[1]] = $m[2] ?? true; }
+}
+
+if (isset($opts['aide']) || isset($opts['help'])) {
+	fwrite(STDOUT, <<<TXT
+
+Réindexation complète en parallèle.
+
+  --processus=N   nombre de processus (défaut : nombre de cœurs, au plus 8)
+  --tables=a,b    tables à réindexer (défaut : toutes les tables indexées)
+  --racine=/chemin  racine de Providence, si elle n'est pas déduite correctement
+  --silencieux    n'affiche que les erreurs
+
+TXT);
+	exit(0);
+}
+
+$silencieux = isset($opts['silencieux']);
+
+# ----------------------------------------------------------------------
+# Où est Providence ?
+# ----------------------------------------------------------------------
+/*
+ * Ce fichier est atteint par un lien symbolique (app/plugins/Meilisearch → le dépôt), et
+ * __DIR__ rend le chemin réel, dans le dépôt : on ne peut donc pas remonter l'arborescence
+ * depuis lui. On cherche setup.php à partir du répertoire courant, ce qui couvre l'usage
+ * normal (`cd /var/www/html && php app/plugins/…`), et on accepte --racine pour le reste.
+ */
+$racine = null;
+if (!empty($opts['racine'])) {
+	$racine = rtrim((string)$opts['racine'], '/');
+} else {
+	$candidat = getcwd();
+	for ($i = 0; $i < 6 && $candidat && $candidat !== '/'; $i++) {
+		if (file_exists($candidat . '/setup.php') && is_dir($candidat . '/app/lib')) { $racine = $candidat; break; }
+		$candidat = dirname($candidat);
+	}
+}
+if (!$racine || !file_exists($racine . '/setup.php')) {
+	fwrite(STDERR, "Racine de Providence introuvable. Se placer dedans, ou passer --racine=/chemin\n");
+	exit(2);
+}
+
+require_once($racine . '/setup.php');
+require_once(__CA_LIB_DIR__ . '/Search/SearchBase.php');
+require_once(__CA_LIB_DIR__ . '/Search/SearchIndexer.php');
+require_once(__CA_MODELS_DIR__ . '/ca_attributes.php');
+require_once(__CA_MODELS_DIR__ . '/ca_search_indexing_queue.php');
+
+/**
+ * Le moteur configuré.
+ *
+ * `SearchIndexer` garde le sien pour lui ; on en instancie un second, ce qui est sans
+ * conséquence : les tampons d'écriture du connecteur sont statiques, partagés par toutes les
+ * instances d'un même processus. C'est aussi le cas du connecteur ElasticSearch livré avec
+ * CollectiveAccess, et c'est ce qui permet de vider ici ce que l'indexeur a accumulé là.
+ */
+function moteur_de_recherche() {
+	static $moteur = null;
+	if ($moteur === null) {
+		$moteur = SearchBase::newSearchEngine();
+		if (!$moteur) { throw new Exception('Moteur de recherche introuvable — vérifier search_engine_plugin dans app/conf/local/app.conf'); }
+	}
+	return $moteur;
+}
+
+# ----------------------------------------------------------------------
+# Mode enfant : indexer une part
+# ----------------------------------------------------------------------
+
+if (isset($opts['part'])) {
+	exit(indexer_part((int)$opts['part'], (int)$opts['sur'], (string)$opts['table']));
+}
+
+# ----------------------------------------------------------------------
+# Mode parent : orchestrer
+# ----------------------------------------------------------------------
+
+$processus = (int)($opts['processus'] ?? 0);
+if ($processus < 1) { $processus = min(8, max(1, nombre_de_coeurs())); }
+
+$indexeur = new SearchIndexer();
+$tables   = tables_a_traiter($opts['tables'] ?? null, $indexeur);
+if (!sizeof($tables)) {
+	fwrite(STDERR, "Aucune table à réindexer.\n");
+	exit(2);
+}
+
+$dire = function (string $texte) use ($silencieux) { if (!$silencieux) { fwrite(STDOUT, $texte); } };
+
+$dire(sprintf("\nRéindexation de %s sur %d processus\n\n", join(', ', array_column($tables, 'name')), $processus));
+
+// Vider la file avant de tronquer : ses entrées portent sur un index qui va disparaître.
+// Le socle fait de même au début d'une réindexation complète.
+if (empty($opts['tables'])) { ca_search_indexing_queue::flush(); }
+
+$depart = microtime(true);
+$echecs = 0;
+
+foreach ($tables as $table) {
+	$t0 = microtime(true);
+
+	// Une seule troncature, par le parent.
+	moteur_de_recherche()->truncateIndex($table['num']);
+
+	$ids = identifiants($table['name']);
+	$n   = sizeof($ids);
+
+	if (!$n) {
+		$dire(sprintf("  %-28s %s\n", $table['name'], 'vide'));
+		continue;
+	}
+
+	// En dessous de ce seuil, lancer des processus coûte plus cher que le travail lui-même :
+	// chacun doit charger CollectiveAccess avant d'indexer sa première ligne.
+	$parts = ($n < 250) ? 1 : $processus;
+
+	if ($parts === 1) {
+		$code = indexer_part(0, 1, $table['name']);
+		if ($code !== 0) { $echecs++; }
+	} else {
+		$code = lancer_enfants($parts, $table['name'], $racine, $dire);
+		if ($code !== 0) { $echecs++; }
+	}
+
+	$duree = microtime(true) - $t0;
+	$dire(sprintf("  %-28s %6d lignes  %6.1f s  %7.0f lignes/s\n",
+		$table['name'], $n, $duree, $n / max($duree, 0.001)));
+}
+
+$total = microtime(true) - $depart;
+$dire(sprintf("\n%s en %.1f s\n\n", $echecs ? "Terminé avec {$echecs} table(s) en échec" : 'Terminé', $total));
+
+exit($echecs ? 1 : 0);
+
+# ----------------------------------------------------------------------
+# Fonctions
+# ----------------------------------------------------------------------
+
+/**
+ * Indexe les lignes dont l'identifiant vaut $part modulo $sur.
+ *
+ * Le découpage est fait par modulo et non par plage : les identifiants d'une base réelle sont
+ * troués (suppressions, imports partiels), et des plages égales donneraient des parts très
+ * inégales. Le modulo répartit ce qui existe.
+ *
+ * On reproduit fidèlement ce que fait SearchIndexer::reindex(), préchargement compris : sans
+ * lui, chaque ligne redemande ses attributs une par une.
+ *
+ * @return int code de sortie
+ */
+function indexer_part(int $part, int $sur, string $table): int {
+	try {
+		$db        = new Db();
+		$indexeur  = new SearchIndexer($db);
+		$table_num = Datamodel::getTableNum($table);
+		$instance  = Datamodel::getInstanceByTableName($table, true);
+		if (!$instance) { throw new Exception("Table inconnue : {$table}"); }
+
+		$ids = identifiants($table, $part, $sur, $db);
+		if (!sizeof($ids)) { return 0; }
+
+		$element_ids = method_exists($instance, 'getApplicableElementCodes')
+			? array_keys($instance->getApplicableElementCodes(null, false, false))
+			: null;
+
+		$field_data = [];
+		foreach ($ids as $i => $id) {
+			if (!($i % 100)) {
+				$tranche = array_slice($ids, $i, 100);
+				if ($element_ids) { ca_attributes::prefetchAttributes($db, $table_num, $tranche, $element_ids); }
+				$field_data = $indexeur->getFieldDataForReindex($table, $tranche);
+				// Sans ce vidage, les caches de SearchResult grossissent jusqu'à saturer la
+				// mémoire sur une grande table.
+				SearchResult::clearCaches();
+			}
+			$indexeur->indexRow($table_num, $id, $field_data[$id] ?? [], true);
+		}
+
+		// Le tampon du connecteur n'est vidé qu'ici : il ne l'est automatiquement qu'à la
+		// destruction de l'objet, ce qui arriverait trop tard pour que le parent puisse
+		// constater un échec.
+		moteur_de_recherche()->flushContentBuffer();
+
+		return 0;
+	} catch (Throwable $e) {
+		fwrite(STDERR, sprintf("Part %d/%d de %s en échec : %s\n", $part, $sur, $table, $e->getMessage()));
+		return 1;
+	}
+}
+
+/**
+ * Lance les processus enfants et attend leur terme.
+ *
+ * @return int 0 si tous ont abouti
+ */
+function lancer_enfants(int $parts, string $table, string $racine, callable $dire): int {
+	$enfants = [];
+
+	for ($i = 0; $i < $parts; $i++) {
+		$commande = sprintf(
+			'%s %s --part=%d --sur=%d --table=%s --racine=%s',
+			escapeshellarg(PHP_BINARY),
+			escapeshellarg(__FILE__),
+			$i, $parts,
+			escapeshellarg($table),
+			escapeshellarg($racine)
+		);
+
+		$pipes = [];
+		$p = proc_open($commande, [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, $racine);
+		if (!is_resource($p)) {
+			fwrite(STDERR, "Impossible de lancer le processus {$i}\n");
+			return 1;
+		}
+		stream_set_blocking($pipes[1], false);
+		stream_set_blocking($pipes[2], false);
+		$enfants[] = ['proc' => $p, 'pipes' => $pipes, 'part' => $i, 'err' => ''];
+	}
+
+	$echecs = 0;
+	foreach ($enfants as &$enfant) {
+		// On lit avant d'attendre : un enfant qui remplit son tuyau d'erreur se bloquerait.
+		while (true) {
+			$statut = proc_get_status($enfant['proc']);
+			$enfant['err'] .= (string)stream_get_contents($enfant['pipes'][2]);
+			stream_get_contents($enfant['pipes'][1]);
+			if (!$statut['running']) { break; }
+			usleep(20000);
+		}
+		$enfant['err'] .= (string)stream_get_contents($enfant['pipes'][2]);
+
+		fclose($enfant['pipes'][1]);
+		fclose($enfant['pipes'][2]);
+		$code = proc_close($enfant['proc']);
+
+		if ($code !== 0) {
+			$echecs++;
+			fwrite(STDERR, sprintf("  part %d de %s : code %d\n%s\n", $enfant['part'], $table, $code, trim($enfant['err'])));
+		} elseif (trim($enfant['err']) !== '') {
+			fwrite(STDERR, trim($enfant['err']) . "\n");
+		}
+	}
+
+	return $echecs ? 1 : 0;
+}
+
+/**
+ * Identifiants d'une table, éventuellement restreints à une part.
+ */
+function identifiants(string $table, int $part = 0, int $sur = 1, ?Db $db = null): array {
+	$db       = $db ?: new Db();
+	$instance = Datamodel::getInstanceByTableName($table, true);
+	$pk       = $instance->primaryKey();
+
+	$where = [];
+	if ($instance->hasField('deleted')) { $where[] = 'deleted = 0'; }
+	if ($sur > 1) { $where[] = "({$pk} % {$sur}) = {$part}"; }
+
+	$sql = "SELECT {$pk} FROM {$table}" . (sizeof($where) ? ' WHERE ' . join(' AND ', $where) : '') . " ORDER BY {$pk}";
+	return $db->query($sql)->getAllFieldValues($pk);
+}
+
+/**
+ * Tables à traiter : celles demandées, ou toutes celles que le socle déclare indexées.
+ */
+function tables_a_traiter($demandees, SearchIndexer $indexeur): array {
+	if ($demandees && is_string($demandees)) {
+		$tables = [];
+		foreach (preg_split('![,;]+!', $demandees, -1, PREG_SPLIT_NO_EMPTY) as $nom) {
+			$nom = trim($nom);
+			if (!Datamodel::tableExists($nom)) {
+				fwrite(STDERR, "Table inconnue, ignorée : {$nom}\n");
+				continue;
+			}
+			$tables[] = ['name' => $nom, 'num' => Datamodel::getTableNum($nom)];
+		}
+		return $tables;
+	}
+
+	$tables = [];
+	foreach ($indexeur->getIndexedTables() as $num => $info) {
+		$tables[] = ['name' => $info['name'], 'num' => $num];
+	}
+	return $tables;
+}
+
+function nombre_de_coeurs(): int {
+	if (is_readable('/proc/cpuinfo')) {
+		$n = substr_count((string)file_get_contents('/proc/cpuinfo'), 'processor');
+		if ($n > 0) { return $n; }
+	}
+	$n = (int)@shell_exec('sysctl -n hw.ncpu 2>/dev/null');
+	return $n > 0 ? $n : 4;
+}

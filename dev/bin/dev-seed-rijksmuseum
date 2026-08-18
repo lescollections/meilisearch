@@ -1,0 +1,13 @@
+#!/bin/bash
+# Charge la collection du Rijksmuseum (plafonnée à 300 000 œuvres, sans images).
+#
+#   dev-seed-rijksmuseum --colonnes   → inspecte l'en-tête du CSV, n'importe rien
+#   dev-seed-rijksmuseum              → 300 000 œuvres
+#   dev-seed-rijksmuseum 50000
+#
+# Le premier appel télécharge l'archive ZIP et la garde en cache dans app/tmp. Idempotent.
+set -euo pipefail
+
+printf '\033[36m[dev]\033[0m %s\n' "chargement de la collection du Rijksmuseum…"
+su -s /bin/bash www-data -c \
+    "cd /var/www/html && php /opt/meilisearch/seed-rijksmuseum.php $*"
