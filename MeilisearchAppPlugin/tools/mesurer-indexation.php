@@ -37,6 +37,7 @@ require_once(__CA_LIB_DIR__ . '/Search/SearchBase.php');
 require_once(__CA_LIB_DIR__ . '/Search/SearchIndexer.php');
 require_once(__CA_MODELS_DIR__ . '/ca_attributes.php');
 require_once(__CA_LIB_DIR__ . '/Plugins/SearchEngine/Meilisearch/Client.php');
+require_once(__DIR__ . '/_socle.php');
 
 function nombre_objets(): int {
 	$qr = (new Db())->query('SELECT COUNT(*) AS n FROM ca_objects WHERE deleted = 0');
@@ -74,7 +75,7 @@ foreach ($ids as $i => $id) {
 		$t0    = microtime(true);
 		$tranche = array_slice($ids, $i, 100);
 		if ($element_ids) { ca_attributes::prefetchAttributes($db, $table_num, $tranche, $element_ids); }
-		$field_data = $indexer->getFieldDataForReindex('ca_objects', $tranche);
+		$field_data = donnees_de_champs($indexer, 'ca_objects', $tranche, $db);
 		SearchResult::clearCaches();
 		$t_prefetch += microtime(true) - $t0;
 	}
@@ -85,7 +86,7 @@ foreach ($ids as $i => $id) {
 }
 
 $t0 = microtime(true);
-SearchBase::newSearchEngine()->flushContentBuffer();   // le connecteur tient le tampon, pas l'indexeur
+vider_tampon_moteur(SearchBase::newSearchEngine());   // le connecteur tient le tampon, pas l'indexeur
 $t_flush = microtime(true) - $t0;
 
 $total = microtime(true) - $depart;

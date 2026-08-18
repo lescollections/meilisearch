@@ -91,6 +91,7 @@ require_once(__CA_LIB_DIR__ . '/Search/SearchBase.php');
 require_once(__CA_LIB_DIR__ . '/Search/SearchIndexer.php');
 require_once(__CA_MODELS_DIR__ . '/ca_attributes.php');
 require_once(__CA_MODELS_DIR__ . '/ca_search_indexing_queue.php');
+require_once(__DIR__ . '/_socle.php');
 
 /**
  * Le moteur configuré.
@@ -214,7 +215,7 @@ function indexer_part(int $part, int $sur, string $table): int {
 			if (!($i % 100)) {
 				$tranche = array_slice($ids, $i, 100);
 				if ($element_ids) { ca_attributes::prefetchAttributes($db, $table_num, $tranche, $element_ids); }
-				$field_data = $indexeur->getFieldDataForReindex($table, $tranche);
+				$field_data = donnees_de_champs($indexeur, $table, $tranche, $db);
 				// Sans ce vidage, les caches de SearchResult grossissent jusqu'à saturer la
 				// mémoire sur une grande table.
 				SearchResult::clearCaches();
@@ -225,7 +226,7 @@ function indexer_part(int $part, int $sur, string $table): int {
 		// Le tampon du connecteur n'est vidé qu'ici : il ne l'est automatiquement qu'à la
 		// destruction de l'objet, ce qui arriverait trop tard pour que le parent puisse
 		// constater un échec.
-		moteur_de_recherche()->flushContentBuffer();
+		vider_tampon_moteur(moteur_de_recherche());
 
 		return 0;
 	} catch (Throwable $e) {
