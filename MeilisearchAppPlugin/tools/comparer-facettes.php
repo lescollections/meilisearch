@@ -116,6 +116,11 @@ $comparer = function (string $facette, array $criteres, string $intitule)
 	$info = $reference->getInfoForFacet($facette);
 	if (!is_array($info)) { return; }
 
+	// `_search` et `_reltypes` sont des critères virtuels, injectés par le constructeur du
+	// BrowseEngine : ils n'ont pas de contenu, ni ici ni au SQL. Les compter parmi les
+	// facettes « reparties au SQL » gonflerait le bilan de deux entrées sans objet.
+	if (empty($info['type'])) { return; }
+
 	$delegation(false);
 	try {
 		$sql = $browse_neuf($criteres)->getFacetContent($facette, []);
