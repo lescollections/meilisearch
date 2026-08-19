@@ -136,7 +136,58 @@ class Schema {
 		foreach (self::FILTER_FIELDS as $field) {
 			$attributes[] = $this->fieldName($subject_table, $field);
 		}
-		return $attributes;
+		foreach ($this->facetedFields($subject_table) as $field) {
+			$attributes[] = $this->fieldName($subject_table, $field);
+		}
+		return array_values(array_unique($attributes));
+	}
+
+	/**
+	 * Champs sur lesquels `browse.conf` demande de facetter, pour les types que le pont
+	 * traduit (`fieldList`, `has` sur élément de métadonnée).
+	 *
+	 * On les lit plutôt que de les énumérer : chaque instance a ses facettes, et une liste
+	 * figée ici ne couvrirait pas les configurations des clients. Le symptôme d'un champ
+	 * oublié est discret — le moteur refuse la distribution (HTTP 400), le pont décline, le
+	 * SQL rend la bonne réponse, et personne ne voit qu'un gain dormait là.
+	 *
+	 * Ne sont retenues que les facettes portant sur la table sujet elle-même : `relative_to`
+	 * désigne un champ d'une autre table, que ce document ne porte pas.
+	 *
+	 * @return array noms de champs, sans doublon
+	 */
+	private function facetedFields(string $subject_table): array {
+		if (!class_exists('\Configuration')) { return []; }
+
+		try {
+			$config = \Configuration::load(__CA_CONF_DIR__ . '/browse.conf');
+			$settings = $config ? $config->getAssoc($subject_table) : null;
+		} catch (\Exception $e) {
+			return [];
+		}
+		if (!is_array($settings) || !is_array($settings['facets'] ?? null)) { return []; }
+
+		$fields = [];
+		foreach ($settings['facets'] as $facet) {
+			if (!is_array($facet) || !empty($facet['relative_to'])) { continue; }
+
+			switch ($facet['type'] ?? null) {
+				case 'fieldList':
+					// Une facette fieldList adossée à une table liée se compte par la facette
+					// de cette table, pas par un intrinsèque.
+					if (empty($facet['table']) && !empty($facet['field'])) { $fields[] = (string)$facet['field']; }
+					break;
+
+				case 'has':
+					if (!empty($facet['element_code'])) {
+						$parts = explode('.', (string)$facet['element_code']);
+						$fields[] = (string)array_pop($parts);
+					}
+					break;
+			}
+		}
+
+		return array_values(array_unique($fields));
 	}
 
 	/**
