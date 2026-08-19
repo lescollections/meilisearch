@@ -92,11 +92,47 @@ distinctes rendues en 42 ms) — le top-N n'est pas un plafond du moteur, juste 
   distincts** de sa branche ; le SQL additionne les branches et compte deux fois l'objet lié à
   deux descendants. Notre compte est le bon.
 
+### floutier — déployé, comparé, **pas basculé**
+
+Première instance réelle. Tout est en place et éprouvé ; `search_engine_plugin` vaut **encore
+SqlSearch2**, et la bascule reste à décider (voir plus bas ce qu'elle emporte).
+
+| | |
+|---|---|
+| dépôt | `/opt/lescollections/meilisearch` — hors racines web, prévu pour servir les 17 vhosts |
+| moteur | service systemd, **127.0.0.1:7700 seulement**, mode production avec clé dans `/etc/meilisearch.env` |
+| version | **1.53.1** — et non la 1.13.3 du harnais ; à savoir, rien n'a divergé |
+| réglages | constantes dans `setup.php` (non suivi par git) : URL, clé, préfixe `floutier` |
+| index | 1 629 documents, 23 Mo de fichier, 12 Mo utiles |
+| socle | `collectiveaccess/providence` amont — mais `BrowseEngine.php` **identique au fork, md5 pour md5** |
+| comparaison | `comparer-facettes.php` : **22 conformes, 28 au SQL, 0 divergente** |
+| gains | `type_facet` ×5 (17,9 → 3,9 ms), `has_media_facet` ×7 (27,1 → 3,7 ms) |
+
+**Le fonds est maigre en relations** : 0 lien objet-entité, lieu, vocabulaire, collection. Seules
+`type_facet`, `has_media_facet` et `access_facet` y ont du contenu. Les autorités et les
+hiérarchies n'y sont donc **pas éprouvées** — elles ne le sont que par la matière fabriquée du
+test sur le harnais. Pour les valider sur des données réelles, il faut une instance qui lie ses
+objets : préprod-130.32.
+
+**Ce que la bascule emporterait, et qui n'est pas décidé :**
+
+- elle change la **recherche**, pas seulement les facettes : les manques connus du connecteur
+  (`oil NOT canvas` rend tout le fonds, `||` traité comme AND, intervalles ignorés, préfixe de
+  deux lettres qui ramène tout) deviendraient visibles des catalogueurs ;
+- **`quickSearch()` n'applique aucun filtre** — floutier porte 23 fiches `access = 0`. En
+  arrière-guichet le catalogueur voit de toute façon tout, donc pas de fuite ici ; mais c'est la
+  raison de plus de ne pas basculer Pawtucket ;
+- **Pawtucket a sa propre `app/conf`** (pas un lien), il resterait donc sur SqlSearch2 — dont
+  l'index cesserait d'être tenu à jour, puisque Providence écrirait ailleurs. Le site public
+  dériverait doucement. Réversible : remettre la ligne et `rebuild-search-index`.
+
+Retour en arrière du déploiement entier : `./installer.sh <racine> --retirer`.
+
 ### À reprendre là (facettes)
 
-1. **Tester sur floutier** (1 629 objets, facettes type d'objet et avec/sans
-   média — l'utilisatrice est prévenue qu'on travaille sur l'instance). Déployer : connecteur +
-   greffon + patch socle + réindexation. Vérifier l'écran de browse réel, pas seulement l'API.
+1. **Décider la bascule de floutier** (une ligne dans `app/conf/local/app.conf`), au vu de ce qui
+   précède. L'index est déjà chaud : `reindexer.php --moteur=Meilisearch` l'a rempli pendant que
+   SqlSearch2 servait. Vérifier ensuite l'écran de browse réel, pas seulement l'API.
 2. Types de facette suivants par valeur décroissante : `attribute` (élément de liste),
    `normalizedDates` (via `facetStats`/intervalles — indexer la valeur normalisée), `label`.
 3. `execute()` lui-même (le jeu de résultats du browse) reste en SQL : le déléguer quand tous
