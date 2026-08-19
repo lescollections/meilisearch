@@ -243,6 +243,15 @@ $comparer = function (string $facette, array $criteres, string $intitule)
 
 	foreach ($c_sql as $id => $n) {
 		if (!isset($c_ms[$id]) || $c_ms[$id] === $n) { continue; }
+
+		// Le socle ne rend aucun compte pour certains postes — un booléen de facette `field`
+		// recopie son gabarit [id, label] sans content_count (BrowseEngine.php:5618). Nous en
+		// fournissons un : l'interface affiche un nombre là où elle n'en avait pas.
+		if ($n === -1) {
+			$assumes[] = sprintf('%s : le socle ne rend aucun compte pour ce poste (nous : %d)', $id, $c_ms[$id]);
+			continue;
+		}
+
 		// Un nœud non-feuille : le SQL somme les branches, le moteur compte les documents
 		// distincts. On interroge la hiérarchie réelle plutôt que les seuls enfants présents
 		// dans la facette — un ancêtre dont les descendants comptés sont des petits-enfants
