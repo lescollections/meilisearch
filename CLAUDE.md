@@ -128,6 +128,43 @@ objets : préprod-130.32.
 
 Retour en arrière du déploiement entier : `./installer.sh <racine> --retirer`.
 
+### Mayenne — le connecteur ne tourne pas sur CollectiveAccess 1.7
+
+Écarté comme terrain d'essai, pour une raison de fond qu'il faut connaître avant de proposer
+une instance : **le connecteur ne peut pas même se charger sur un socle 1.7.**
+
+`IWLPlugSearchEngine` y déclare ses paramètres sans types
+(`indexField($pn_content_tablenum, $ps_content_fieldname, …)`) là où le connecteur les type.
+Typer un paramètre que l'interface laisse libre viole la contravariance : PHP refuse la classe
+à l'analyse, pas à l'exécution. Vérifié par reproduction minimale plutôt que supposé —
+« *Declaration of Connecteur::indexField(int $a, …) must be compatible with
+ISocle17::indexField($a, …)* ». Le remède, si le besoin revient : ôter les types des méthodes
+qui implémentent l'interface. Une signature *sans* type est compatible avec les deux socles
+(elle est plus large), donc un seul connecteur pourrait servir 1.7 et 2.0 — au prix de la
+sûreté de typage. Le `BrowseEngine` de 1.7 (7 551 lignes contre 8 480) est par ailleurs trop
+différent : `patcher-browse.php` refuse de s'y poser, ce qui est exactement son rôle.
+
+**Et la machine ne peut pas passer en 2.0 sans frais.** Debian 11, PHP 7.4 seul, pas de dépôt
+Sury. Y installer PHP 8.4 en FPM à côté de mod_php 7.4 est possible, mais entraîne la montée
+de `libpcre2` (5 paquets), `libgd3` — la chaîne média — et `php-common`, tous partagés avec la
+production hébergée sur la même machine. Écarté pour cette raison. À savoir si l'on y revient :
+`unattended-upgrades` y est actif mais n'accepte que les origines Debian, donc un dépôt Sury
+ajouté ne peut rien déclencher de lui-même ; l'épinglage à priorité −1 sur `php7.4*`,
+`php8.5*`, `php`, `php-cli`, `php-redis` et `php-igbinary` suffit à contenir le reste.
+
+**Ce qu'on fait à la place** : la base de recette est rapatriée dans le harnais local. Le dump
+tombe de 5,5 Go à 60 Mo en écartant les données de `ca_sql_search_word_index` (3,4 Go à lui
+seul), des trois tables de `ca_change_log`, de `ca_eventlog` et de `ca_task_queue` — tout se
+reconstruit, et la structure est conservée. Le socle porte une commande dédiée,
+`caUtils update-from-1-7` (schéma, valeurs de tri, réindexation complète).
+
+> **Le harnais accueille une seconde base sans toucher à la première.** `conf/setup.php` lit
+> `CA_DB_DATABASE` dans l'environnement, et le préfixe d'index vient de
+> `CA_MEILISEARCH_INDEX_PREFIX` : `docker compose exec -e CA_DB_DATABASE=mayenne
+> -e CA_MEILISEARCH_INDEX_PREFIX=mayenne …` travaille sur Mayenne pendant que les 71 277 fiches
+> du CMA et leur index restent intacts. **Ne pas oublier le préfixe** — sans lui, la
+> réindexation de la migration écrirait dans l'index du corpus CMA.
+
 ### À reprendre là (facettes)
 
 1. **Décider la bascule de floutier** (une ligne dans `app/conf/local/app.conf`), au vu de ce qui
