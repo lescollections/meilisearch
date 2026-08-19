@@ -79,6 +79,16 @@ class WLPlugSearchEngineMeilisearch extends BaseSearchPlugin implements IWLPlugS
 	static protected $filterable_attributes = [];
 
 	/**
+	 * Pourquoi la dernière facette demandée a été déclinée — nul si elle a été rendue.
+	 * Sert au diagnostic (`comparer-facettes.php`) : décliner est sûr, mais opaque, et toutes
+	 * les raisons ne se valent pas. « type non traduit » est une limite assumée ; « champ non
+	 * déclaré filtrable » est du travail qui dort.
+	 */
+	static protected $last_facet_reason = null;
+
+	public static function lastBrowseFacetReason(): ?string { return self::$last_facet_reason; }
+
+	/**
 	 * Compteurs de recherche, sur le modèle de ceux du client : deux additions, et la réponse
 	 * à la question qui décide du dimensionnement — le temps d'une recherche part-il dans le
 	 * moteur, dans le filtrage SQL, ou dans CollectiveAccess ?
@@ -557,13 +567,21 @@ class WLPlugSearchEngineMeilisearch extends BaseSearchPlugin implements IWLPlugS
 	 * @return array|bool|null
 	 */
 	public function getBrowseFacetContent($browse, string $facet_name, array $facet_info, ?array $options = null) {
-		if (!$this->ms_config->browseFacets()) { return null; }
+		self::$last_facet_reason = null;
+
+		if (!$this->ms_config->browseFacets()) {
+			self::$last_facet_reason = 'facettes du Browse désactivées (meilisearch_browse_facets = 0)';
+			return null;
+		}
 		if (!is_object($browse) || !method_exists($browse, 'getCriteria')) { return null; }
 
 		try {
 			$facets = new Meilisearch\Facets($this);
-			return $facets->facetContent($browse, $facet_name, $facet_info, is_array($options) ? $options : []);
+			$contenu = $facets->facetContent($browse, $facet_name, $facet_info, is_array($options) ? $options : []);
+			self::$last_facet_reason = $facets->derniereRaison();
+			return $contenu;
 		} catch (\Exception $e) {
+			self::$last_facet_reason = $e->getMessage();
 			// Quoi qu'il arrive ici, le SQL sait faire : on décline, et on le dit au journal.
 			Meilisearch\Log::error("Facette « {$facet_name} » : " . $e->getMessage());
 			return null;

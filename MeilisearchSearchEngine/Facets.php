@@ -50,6 +50,26 @@ class Facets {
 	/** @var array cache des listes de valeurs : [list_code] => [items par id, items par valeur, tri] */
 	private static $list_cache = [];
 
+	/**
+	 * Pourquoi le dernier appel a décliné.
+	 *
+	 * Décliner est sûr, mais opaque : « le SQL a repris la main » ne dit pas s'il s'agit d'un
+	 * type qu'on ne traduit pas encore, d'un champ qu'on n'a pas rendu filtrable, ou d'une
+	 * option qui interdit la traduction. La première est une limite assumée, la deuxième se
+	 * corrige en une ligne — les confondre, c'est laisser dormir du travail facile.
+	 *
+	 * @var string|null
+	 */
+	private $raison = null;
+
+	public function derniereRaison(): ?string { return $this->raison; }
+
+	/** Note la raison et décline. Toujours `return $this->decliner(…)`. */
+	private function decliner(string $raison) {
+		$this->raison = $raison;
+		return null;
+	}
+
 	public function __construct($engine) {
 		$this->engine = $engine;
 		$this->schema = $engine->getSchema();
@@ -72,34 +92,43 @@ class Facets {
 	 *         ou null pour décliner.
 	 */
 	public function facetContent($browse, string $facet_name, array $facet_info, array $options) {
+		$this->raison = null;
+
 		$type = $facet_info['type'] ?? null;
-		if (!in_array($type, ['fieldList', 'has', 'authority'], true)) { return null; }
+		if ($type === null)  { return $this->decliner('facette virtuelle, sans contenu'); }
+		if (!in_array($type, ['fieldList', 'has', 'authority'], true)) {
+			return $this->decliner("type « {$type} » non traduit");
+		}
 
 		// Options de facette sans traduction exacte : au SQL.
 		foreach (['relative_to', 'filter', 'filter_values', 'single_value', 'exclude_values', 'suppress',
 			'restrict_to_lists', 'exclude_relationship_types', 'filter_on_interstitial'] as $key) {
-			if (!empty($facet_info[$key])) { return null; }
+			if (!empty($facet_info[$key])) { return $this->decliner("option « {$key} » non traduite"); }
 		}
 		// L'index porte toujours les ancêtres : une facette qui refuse l'expansion
 		// hiérarchique rendrait des comptes plus larges que son SQL.
 		if ($type === 'authority'
 			&& (!empty($facet_info['dontExpandHierarchically']) || !empty($facet_info['dont_expand_hierarchically']))) {
-			return null;
+			return $this->decliner('expansion hiérarchique refusée par la facette');
 		}
 
 		$t_subject = $browse->getSubjectInstance();
-		if (!$t_subject) { return null; }
-		if (function_exists('caACLIsEnabled') && caACLIsEnabled($t_subject)) { return null; }
+		if (!$t_subject) { return $this->decliner('table sujet introuvable'); }
+		if (function_exists('caACLIsEnabled') && caACLIsEnabled($t_subject)) {
+			return $this->decliner('ACL par enregistrement active');
+		}
 
 		$subject_table = $t_subject->tableName();
 		$index         = $this->schema->indexName($subject_table);
 
 		// Un index sans aucun attribut de facette date d'avant cette version du connecteur :
 		// tout décliner tant qu'une réindexation ne l'a pas mis au niveau.
-		if (!$this->indexHasFacets($index)) { return null; }
+		if (!$this->indexHasFacets($index)) {
+			return $this->decliner('index sans attribut de facette — réindexer');
+		}
 
 		$state = $this->translateBrowseState($browse, $t_subject, $options);
-		if ($state === null) { return null; }
+		if ($state === null) { return null; }   // translateBrowseState a nommé sa raison
 		list($q, $filter_clauses) = $state;
 
 		try {
@@ -114,10 +143,10 @@ class Facets {
 		} catch (ClientException $e) {
 			// Moteur en panne : le browse doit rester utilisable, le SQL prend le relais.
 			Log::error("Facette « {$facet_name} » sur {$index} : " . $e->getMessage());
-			return null;
+			return $this->decliner('moteur : ' . $e->getMessage());
 		}
 
-		return null;
+		return $this->decliner('cas non traité');
 	}
 
 	# -------------------------------------------------------
@@ -151,15 +180,15 @@ class Facets {
 
 			if ($criterion_facet === '_search') {
 				$q = $this->translateSearch($values);
-				if ($q === null) { return null; }
+				if ($q === null) { return $this->decliner('recherche en cours à syntaxe Lucene'); }
 				continue;
 			}
-			if ($criterion_facet === '_reltypes') { return null; }
+			if ($criterion_facet === '_reltypes') { return $this->decliner('critère _reltypes en cours'); }
 
 			$info = $browse->getInfoForFacet($criterion_facet);
-			if (!is_array($info)) { return null; }
+			if (!is_array($info)) { return $this->decliner("critère « {$criterion_facet} » inconnu"); }
 			foreach (['relative_to', 'filter_on_interstitial', 'exclude_relationship_types'] as $key) {
-				if (!empty($info[$key])) { return null; }
+				if (!empty($info[$key])) { return $this->decliner("critère en cours porte « {$key} »"); }
 			}
 
 			$clause = null;
@@ -174,9 +203,9 @@ class Facets {
 					$clause = $this->authorityCriterion($subject_table, $info, $values, $fields);
 					break;
 				default:
-					return null;   // type de critère non traduit
+					return $this->decliner("critère de type « " . ($info['type'] ?? '?') . " » non traduit");
 			}
-			if ($clause === null) { return null; }
+			if ($clause === null) { return $this->decliner("critère « {$criterion_facet} » non traduit"); }
 			if (strlen($clause)) { $clauses[] = $clause; }
 		}
 
@@ -184,13 +213,13 @@ class Facets {
 		// l'index : filtrer sur un attribut absent rendrait des comptes faux en silence.
 		if (($check_access = $options['checkAccess'] ?? null) && is_array($check_access) && sizeof($check_access) && $t_subject->hasField('access')) {
 			$attr = $this->schema->fieldName($subject_table, 'access');
-			if (!in_array($attr, $fields, true)) { return null; }
+			if (!in_array($attr, $fields, true)) { return $this->decliner('filtre d\'accès : champ non filtrable'); }
 			$clauses[] = $attr . ' IN ' . $this->inList($check_access);
 		}
 
 		if (($type_ids = $browse->getTypeRestrictionList()) && is_array($type_ids) && sizeof($type_ids)) {
 			$attr = $this->schema->fieldName($subject_table, 'type_id');
-			if (!in_array($attr, $fields, true)) { return null; }
+			if (!in_array($attr, $fields, true)) { return $this->decliner('restriction de type : champ non filtrable'); }
 			$clause = $attr . ' IN ' . $this->inList($type_ids);
 			if ($t_subject->getFieldInfo('type_id', 'IS_NULL')) {
 				$clause = '(' . $clause . ' OR ' . $attr . ' NOT EXISTS)';
@@ -201,13 +230,13 @@ class Facets {
 		if (method_exists($t_subject, 'getSourceFieldName') && $t_subject->getSourceFieldName()
 			&& ($source_ids = $browse->getSourceRestrictionList()) && is_array($source_ids) && sizeof($source_ids)) {
 			$attr = $this->schema->fieldName($subject_table, $t_subject->getSourceFieldName());
-			if (!in_array($attr, $fields, true)) { return null; }
+			if (!in_array($attr, $fields, true)) { return $this->decliner('restriction de source : champ non filtrable'); }
 			$clauses[] = $attr . ' IN ' . $this->inList($source_ids);
 		}
 
 		if (!empty($options['filterDeaccessionedRecords']) && $t_subject->hasField('is_deaccessioned')) {
 			$attr = $this->schema->fieldName($subject_table, 'is_deaccessioned');
-			if (!in_array($attr, $fields, true)) { return null; }
+			if (!in_array($attr, $fields, true)) { return $this->decliner('filtre aliénation : champ non filtrable'); }
 			$clauses[] = $attr . ' IN ' . $this->inList([0]);
 		}
 
@@ -326,16 +355,18 @@ class Facets {
 	private function fieldListFacet($browse, string $index, $t_subject, string $facet_name, array $facet_info, array $options, string $q, array $clauses) {
 		$subject_table = $t_subject->tableName();
 		$field         = $facet_info['field'] ?? null;
-		if (!$field || !empty($facet_info['table'])) { return null; }
+		if (!$field) { return $this->decliner('facette sans champ'); }
+		if (!empty($facet_info['table'])) { return $this->decliner('fieldList sur table liée non traduite'); }
 
 		$field_info = \Datamodel::getFieldInfo($subject_table, $field);
-		if (!is_array($field_info)) { return null; }
+		if (!is_array($field_info)) { return $this->decliner("champ « {$field} » inconnu du modèle"); }
 		$list_code = $field_info['LIST_CODE'] ?? ($field_info['LIST'] ?? null);
-		if (!$list_code) { return null; }
+		if (!$list_code) { return $this->decliner("champ « {$field} » sans liste de valeurs"); }
 		$by_value = !isset($field_info['LIST_CODE']);
 
 		$attr = $this->schema->fieldName($subject_table, $field);
 		if (!$this->engine->isFilterable($index, $attr)) {
+			$this->raison = "« {$attr} » non déclaré filtrable";
 			// Champ non déclaré filtrable : le moteur refuserait la distribution (HTTP 400).
 			// C'est le cas courant d'un intrinsèque indexé comme texte et jamais facetté —
 			// `status`, par exemple. Au SQL, sans bruit.
@@ -394,9 +425,9 @@ class Facets {
 		if (isset($all_criteria[$facet_name])) { return []; }   // une seule occurrence par browse
 
 		$attrs = $this->hasAttributes($t_subject->tableName(), $facet_info);
-		if ($attrs === null) { return null; }
+		if ($attrs === null) { return $this->decliner('facette has non traduisible'); }
 		foreach ($attrs as $a) {
-			if (!$this->engine->isFilterable($index, $a)) { return null; }
+			if (!$this->engine->isFilterable($index, $a)) { return $this->decliner("« {$a} » non déclaré filtrable"); }
 		}
 
 		$exists  = '(' . join(' OR ', array_map(function ($a) { return $a . ' EXISTS'; }, $attrs)) . ')';
@@ -433,14 +464,15 @@ class Facets {
 	private function authorityFacet($browse, string $index, $t_subject, string $facet_name, array $facet_info, array $options, string $q, array $clauses) {
 		$subject_table = $t_subject->tableName();
 		$table         = $facet_info['table'] ?? null;
-		if (!$table || $table === $subject_table) { return null; }   // relations réflexives : au SQL
+		if (!$table) { return $this->decliner('facette authority sans table'); }
+		if ($table === $subject_table) { return $this->decliner('relation réflexive non traduite'); }
 
 		$attr = $this->authorityAttribute($subject_table, $facet_info);
-		if ($attr === null) { return null; }
+		if ($attr === null) { return $this->decliner('table ou type de relation non facettable'); }
 
 		// Non déclaré filtrable : l'index date d'avant cette version du connecteur, ou la table
 		// n'est pas facettée. On décline plutôt que de se faire refuser la requête.
-		if (!$this->engine->isFilterable($index, $attr)) { return null; }
+		if (!$this->engine->isFilterable($index, $attr)) { return $this->decliner("« {$attr} » non déclaré filtrable"); }
 
 		if (!in_array($attr, $this->engine->indexFields($index), true)) {
 			// Déclaré, mais aucun document ne le porte : contenu réellement vide.
@@ -448,7 +480,7 @@ class Facets {
 		}
 
 		$t_rel = \Datamodel::getInstanceByTableName($table, true);
-		if (!$t_rel) { return null; }
+		if (!$t_rel) { return $this->decliner("table « {$table} » inconnue du modèle"); }
 
 		// Pour une table hiérarchique, la distribution des liens directs s'obtient dans la
 		// même requête : le socle traite différemment un enregistrement lié (conservé même

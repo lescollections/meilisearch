@@ -104,7 +104,7 @@ printf("\033[90mtable %s — moteur en service : %s%s\033[0m\n\n",
 
 $reference   = caGetBrowseInstance($table);
 $facettes    = $reference->getInfoForFacets();
-$bilan       = ['conforme' => 0, 'decline' => 0, 'divergent' => 0];
+$bilan       = ['conforme' => 0, 'decline' => 0, 'divergent' => 0, 'raisons' => []];
 $divergences = [];
 
 /**
@@ -131,7 +131,9 @@ $comparer = function (string $facette, array $criteres, string $intitule)
 
 	if ($ms === null) {
 		$bilan['decline']++;
-		printf("  \033[90m·\033[0m %-46s \033[90m%s — au SQL\033[0m\n", $intitule, $info['type'] ?? '?');
+		$raison = method_exists($moteur, 'lastBrowseFacetReason') ? $moteur::lastBrowseFacetReason() : null;
+		$bilan['raisons'][$raison ?: 'sans raison notée'] = ($bilan['raisons'][$raison ?: 'sans raison notée'] ?? 0) + 1;
+		printf("  \033[90m·\033[0m %-46s \033[90m%s\033[0m\n", $intitule, $raison ?: (($info['type'] ?? '?') . ' — au SQL'));
 		return;
 	}
 
@@ -213,6 +215,16 @@ if (isset($opts['criteres'])) {
 }
 
 # ----------------------------------------------------------------------
+
+// Le détail des déclins vaut mieux qu'un total : « type non traduit » est une limite assumée,
+// « champ non déclaré filtrable » est du travail qui dort.
+if (sizeof($bilan['raisons'])) {
+	printf("\n\033[1mPourquoi le SQL a repris la main\033[0m\n");
+	arsort($bilan['raisons']);
+	foreach ($bilan['raisons'] as $raison => $n) {
+		printf("  \033[90m%3d ×\033[0m %s\n", $n, $raison);
+	}
+}
 
 printf("\n  \033[32m%d conforme(s)\033[0m, \033[90m%d au SQL\033[0m, %s\n\n",
 	$bilan['conforme'], $bilan['decline'],
