@@ -48,6 +48,63 @@ Le corpus CMA arrive en `access = 1` et sans images (`CA_SEED_CMA_MEDIA=1` pour 
 L'indexation de recherche est coupée pendant le chargement, pour que la réindexation se mesure
 comme une opération à part.
 
+## Point d'étape — 19 août 2026 : les facettes du Browse
+
+**Le Browse délègue ses facettes au moteur.** Deux moitiés : le connecteur indexe la matière et
+répond (`Facets.php`, le pont), le socle porte un point de délégation de 36 lignes dans
+`BrowseEngine::getFacetContent()` — branche `feature/meilisearch-browse-facets` dans les clones
+locaux `../providence` et `../pawtucket2` (BrowseEngine y est du code partagé : 88 lignes d'écart
+sur 8 480, ailleurs que dans notre zone ; le patch est octet pour octet le même).
+
+Doctrine du pont : **traduire exactement ou décliner** — un `null` rend la main au SQL du socle,
+facette par facette, sans réglage. Couvert : `fieldList`, `has`, `authority` (avec hiérarchies),
+critère `_search` en texte nu, checkAccess, restrictions de type/source, `is_deaccessioned`.
+Décliné d'office : `relative_to`, `filter`, ACL par enregistrement (sorti du périmètre — un seul
+client s'en sert pour la visibilité), `exclude_relationship_types`, plusieurs
+`restrict_to_relationship_types` (double compte), relations réflexives, syntaxe Lucene dans
+`_search`, et tout type non couvert. `tests/browse-facettes.php` : 18 vérifications d'équivalence
+contre l'instance, qui fabriquent leur matière authority (entités + vocabulaire hiérarchique
+« Abyssinie » marqué TEST-FAC) — le harnais n'a aucun lien objet-entité naturel.
+
+À 71 277 fiches : `type_facet` 211 → 2,8 ms à vide, 233 → **1,3 ms** sous un critère à 70 964
+résultats (le `IN (…)` littéral du SQL contre un `filter`). Réindexation : 892 fiches/s, pas de
+régression. `maxValuesPerFacet` posé à 500 000 : les facettes sont exhaustives (50 000 valeurs
+distinctes rendues en 42 ms) — le top-N n'est pas un plafond du moteur, juste son défaut.
+
+### Pièges payés en route
+
+- **Les appels `COUNT` de l'indexeur portent la table liée mais le `row_id` du sujet**
+  (`SearchIndexer.php:1237`) : sans les écarter, chaque objet se croit lié à l'entité homonyme
+  de son propre identifiant. Vu parce que le harnais n'a aucune vraie relation.
+- **Le SQL du socle écarte un *ancêtre* sans `type_id`, sans accès ou hors restriction, mais
+  garde un lien *direct* dans les mêmes conditions** (`BrowseEngine.php:7262-7269`). D'où le
+  second attribut `facet_direct__<table>` sur les tables hiérarchiques : les deux distributions
+  s'obtiennent dans la même requête, et le pont applique la règle du socle à l'identique.
+- **Le filtre d'accès du Browse porte aussi sur les items de liste eux-mêmes** (`li.access`) :
+  dans le profil livré, tous les types d'objet ont `access = 0` — filtrer par accès vide la
+  facette des types, en SQL comme au moteur. C'est le socle qui le veut.
+- **`attributePatterns` (motifs `facet__*` dans `filterableAttributes`) n'existe qu'en
+  Meilisearch ≥ 1.14** ; le harnais est en 1.13. D'où l'énumération : base connue posée à la
+  création de l'index, variantes par type de relation déclarées au fil des versements — et
+  `prepareIndex()` **fusionne** avec l'existant au lieu de remplacer, sinon chaque nouveau
+  processus effacerait les variantes et paierait une reconstruction des bases de facettes.
+- Écart assumé, documenté dans le test : le compte d'un ancêtre est le nombre de **documents
+  distincts** de sa branche ; le SQL additionne les branches et compte deux fois l'objet lié à
+  deux descendants. Notre compte est le bon.
+
+### À reprendre là (facettes)
+
+1. **Tester sur floutier** (1 629 objets, facettes type d'objet et avec/sans
+   média — l'utilisatrice est prévenue qu'on travaille sur l'instance). Déployer : connecteur +
+   greffon + patch socle + réindexation. Vérifier l'écran de browse réel, pas seulement l'API.
+2. Types de facette suivants par valeur décroissante : `attribute` (élément de liste),
+   `normalizedDates` (via `facetStats`/intervalles — indexer la valeur normalisée), `label`.
+3. `execute()` lui-même (le jeu de résultats du browse) reste en SQL : le déléguer quand tous
+   les critères se traduisent ferait disparaître la dernière clause `IN` géante.
+4. La suppression d'une relation vide l'attribut de facette en entier (même grain que les
+   attributs texte) ; c'est la réindexation replanifiée par le greffon qui remet les liens
+   restants — à éprouver sur floutier avec de vraies éditions.
+
 ## Point d'étape — 18 août 2026
 
 Le harnais contient **71 277 fiches** (2 500 rochambeau + 68 777 CMA), index à jour, volumes

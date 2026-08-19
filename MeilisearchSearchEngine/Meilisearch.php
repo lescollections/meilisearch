@@ -35,6 +35,7 @@ require_once(__CA_LIB_DIR__ . '/Plugins/SearchEngine/Meilisearch/Client.php');
 require_once(__CA_LIB_DIR__ . '/Plugins/SearchEngine/Meilisearch/Schema.php');
 require_once(__CA_LIB_DIR__ . '/Plugins/SearchEngine/Meilisearch/Document.php');
 require_once(__CA_LIB_DIR__ . '/Plugins/SearchEngine/Meilisearch/Query.php');
+require_once(__CA_LIB_DIR__ . '/Plugins/SearchEngine/Meilisearch/Facets.php');
 
 class WLPlugSearchEngineMeilisearch extends BaseSearchPlugin implements IWLPlugSearchEngine {
 	# -------------------------------------------------------
@@ -73,6 +74,9 @@ class WLPlugSearchEngineMeilisearch extends BaseSearchPlugin implements IWLPlugS
 
 	/** Attributs réellement présents dans chaque index, relevés une fois par processus */
 	static protected $index_fields = [];
+
+	/** Attributs filtrables déclarés par index : [index][attribut] => true */
+	static protected $filterable_attributes = [];
 
 	/**
 	 * Compteurs de recherche, sur le modèle de ceux du client : deux additions, et la réponse
@@ -325,16 +329,7 @@ class WLPlugSearchEngineMeilisearch extends BaseSearchPlugin implements IWLPlugS
 		}
 		if (!sizeof($vises)) { return; }
 
-		if (!isset(self::$index_fields[$index])) {
-			try {
-				$stats = $this->getClient()->indexStats($index);
-				self::$index_fields[$index] = array_keys($stats['fieldDistribution'] ?? []);
-			} catch (Meilisearch\ClientException $e) {
-				self::$index_fields[$index] = [];   // sans relevé, on ne dit rien plutôt que de dire faux
-				return;
-			}
-		}
-		if (!sizeof(self::$index_fields[$index])) { return; }
+		if (!sizeof($this->indexFields($index))) { return; }
 
 		foreach (array_keys($vises) as $attribut) {
 			if (!in_array($attribut, self::$index_fields[$index], true)) {
@@ -344,6 +339,23 @@ class WLPlugSearchEngineMeilisearch extends BaseSearchPlugin implements IWLPlugS
 				);
 			}
 		}
+	}
+	# -------------------------------------------------------
+	/**
+	 * Attributs réellement présents dans l'index, relevés une fois par processus. Sert à
+	 * l'alerte de champ non indexé et au pont des facettes, qui refuse de filtrer sur un
+	 * attribut absent — un filtre muet fabrique des comptes faux.
+	 */
+	public function indexFields(string $index): array {
+		if (!isset(self::$index_fields[$index])) {
+			try {
+				$stats = $this->getClient()->indexStats($index);
+				self::$index_fields[$index] = array_keys($stats['fieldDistribution'] ?? []);
+			} catch (Meilisearch\ClientException $e) {
+				self::$index_fields[$index] = [];   // sans relevé, on ne dit rien plutôt que de dire faux
+			}
+		}
+		return self::$index_fields[$index];
 	}
 	# -------------------------------------------------------
 	/**
@@ -505,6 +517,32 @@ class WLPlugSearchEngineMeilisearch extends BaseSearchPlugin implements IWLPlugS
 		return $res;
 	}
 	# -------------------------------------------------------
+	/**
+	 * Contenu d'une facette du Browse, calculé par le moteur — le point d'appel du socle,
+	 * découvert par method_exists() depuis BrowseEngine::getFacetContent().
+	 *
+	 * Rend le contenu au format du socle, un booléen si checkAvailabilityOnly, ou null pour
+	 * décliner — auquel cas le calcul SQL existant reprend la main, à l'identique. Décliner
+	 * est toujours sûr ; répondre engage l'exactitude des comptes, c'est pourquoi le pont
+	 * refuse tout ce qu'il ne traduit pas exactement (voir Facets.php).
+	 *
+	 * @param \BrowseEngine $browse
+	 * @return array|bool|null
+	 */
+	public function getBrowseFacetContent($browse, string $facet_name, array $facet_info, ?array $options = null) {
+		if (!$this->ms_config->browseFacets()) { return null; }
+		if (!is_object($browse) || !method_exists($browse, 'getCriteria')) { return null; }
+
+		try {
+			$facets = new Meilisearch\Facets($this);
+			return $facets->facetContent($browse, $facet_name, $facet_info, is_array($options) ? $options : []);
+		} catch (\Exception $e) {
+			// Quoi qu'il arrive ici, le SQL sait faire : on décline, et on le dit au journal.
+			Meilisearch\Log::error("Facette « {$facet_name} » : " . $e->getMessage());
+			return null;
+		}
+	}
+	# -------------------------------------------------------
 	# Indexation
 	# -------------------------------------------------------
 	public function startRowIndexing(int $subject_tablenum, int $subject_row_id): void {
@@ -517,6 +555,18 @@ class WLPlugSearchEngineMeilisearch extends BaseSearchPlugin implements IWLPlugS
 		if ($this->indexing_subject_row_id === null) { return null; }
 
 		$fragment = $this->doc_builder->fragment($content_tablenum, $content_fieldname, $content, $options);
+
+		// Le même appel nourrit la facette de la table liée : l'identifiant de l'enregistrement
+		// lié (et ses ancêtres) sous `facet__<table>`. C'est la matière du Browse — elle passe
+		// ici gratuitement, l'indexeur fournit déjà le row_id. Sauf pour les décomptes : un
+		// appel COUNT porte la table liée mais l'identifiant du *sujet* (SearchIndexer::1237),
+		// qui passerait pour un lien vers un enregistrement homonyme.
+		if (strpos($content_fieldname, 'COUNT') !== 0) {
+			$fragment += $this->doc_builder->facetFragment(
+				$content_tablenum, $content_row_id, (int)$this->indexing_subject_tablenum, $options
+			);
+		}
+
 		foreach ($fragment as $attribute => $values) {
 			if (!isset($this->row_buffer[$attribute])) { $this->row_buffer[$attribute] = []; }
 			$this->row_buffer[$attribute] = array_merge($this->row_buffer[$attribute], $values);
@@ -578,6 +628,19 @@ class WLPlugSearchEngineMeilisearch extends BaseSearchPlugin implements IWLPlugS
 					$fragment[$attribute] = [];
 				}
 			}
+
+			// Les facettes de la table de contenu suivent le même sort que ses attributs
+			// texte : l'effacement est grossier — tout l'attribut, pas la seule valeur — et le
+			// greffon applicatif compense en replanifiant une réindexation complète de
+			// l'enregistrement, qui remet les liens restants.
+			$content_table = Datamodel::getTableName($field_tablenum);
+			if ($content_table && in_array($content_table, Meilisearch\Schema::FACET_TABLES, true)) {
+				$fragment[$this->schema->facetAttribute($content_table)] = [];
+				if ($rel_type_id && function_exists('caGetRelationshipTypeCode') && ($code = caGetRelationshipTypeCode($rel_type_id))) {
+					$fragment[$this->schema->facetAttribute($content_table, $code)] = [];
+				}
+			}
+
 			if (sizeof($fragment)) { $this->bufferDocument($table, $subject_row_id, $fragment, true); }
 			return;
 		}
@@ -759,6 +822,8 @@ class WLPlugSearchEngineMeilisearch extends BaseSearchPlugin implements IWLPlugS
 					);
 				}
 
+				$this->declareFacetAttributes($index, $documents);
+
 				Meilisearch\Log::debug(sprintf('écriture de %d document(s) dans %s', sizeof($documents), $index));
 
 				// PUT : ajout ou fusion. Les attributs absents du document envoyé sont
@@ -795,14 +860,62 @@ class WLPlugSearchEngineMeilisearch extends BaseSearchPlugin implements IWLPlugS
 	# -------------------------------------------------------
 	/**
 	 * Crée l'index et pose ses réglages, une fois par processus.
+	 *
+	 * Les attributs filtrables se fusionnent avec l'existant au lieu de le remplacer : les
+	 * variantes de facette par type de relation sont découvertes au fil des versements
+	 * (voir declareFacetAttributes()), et un nouveau processus qui réappliquerait les seuls
+	 * réglages de base les effacerait — chaque effacement recoûtant une reconstruction des
+	 * bases de facettes.
 	 */
 	private function prepareIndex(string $index, string $table): void {
 		if (isset(self::$prepared_indexes[$index])) { return; }
 
 		$this->getClient()->createIndex($index, Meilisearch\Schema::PK);
-		$this->getClient()->updateSettings($index, $this->schema->indexSettings());
 
-		self::$prepared_indexes[$index] = true;
+		$existing = [];
+		try {
+			$settings = $this->getClient()->getSettings($index);
+			$existing = is_array($settings['filterableAttributes'] ?? null) ? $settings['filterableAttributes'] : [];
+		} catch (Meilisearch\ClientException $e) {
+			// Index tout juste créé : rien à préserver.
+		}
+
+		$filterable = array_values(array_unique(array_merge(
+			$this->schema->baseFilterableAttributes($table), $existing
+		)));
+
+		$this->getClient()->updateSettings($index, $this->schema->indexSettings(null, $filterable));
+
+		self::$filterable_attributes[$index] = array_flip($filterable);
+		self::$prepared_indexes[$index]     = true;
+	}
+	# -------------------------------------------------------
+	/**
+	 * Déclare filtrables les attributs de facette qui apparaissent pour la première fois —
+	 * les variantes par type de relation (`facet__ca_entities__artist`), qu'on ne peut pas
+	 * énumérer d'avance. L'appel est fait avant l'envoi des documents : déclarer d'abord évite
+	 * au moteur de reconstruire ses bases de facettes après coup.
+	 */
+	private function declareFacetAttributes(string $index, array $documents): void {
+		if (!isset(self::$filterable_attributes[$index])) { return; }
+
+		$new = [];
+		foreach ($documents as $document) {
+			foreach ($document as $attribute => $v) {
+				if (isset(self::$filterable_attributes[$index][$attribute])) { continue; }
+				if (strpos($attribute, Meilisearch\Schema::FACET) === 0
+					|| strpos($attribute, Meilisearch\Schema::FACET_DIRECT) === 0) {
+					$new[$attribute] = true;
+				}
+			}
+		}
+		if (!sizeof($new)) { return; }
+
+		self::$filterable_attributes[$index] += $new;
+
+		$this->noteTask($this->getClient()->updateSettings($index, [
+			'filterableAttributes' => array_keys(self::$filterable_attributes[$index]),
+		], false));
 	}
 	# -------------------------------------------------------
 	private function clearBuffers(): void {
