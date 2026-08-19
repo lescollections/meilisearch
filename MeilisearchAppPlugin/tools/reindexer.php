@@ -53,6 +53,10 @@ Réindexation complète en parallèle.
 
   --processus=N   nombre de processus (défaut : nombre de cœurs, au plus 8)
   --tables=a,b    tables à réindexer (défaut : toutes les tables indexées)
+  --moteur=Nom    indexer dans ce moteur plutôt que dans celui qui est configuré
+                  (ex. --moteur=Meilisearch pendant que SqlSearch2 sert encore :
+                  l'index se remplit sans que la recherche en service soit touchée,
+                  et la bascule qui suit trouve un index déjà prêt)
   --racine=/chemin  racine de Providence, si elle n'est pas déduite correctement
   --silencieux    n'affiche que les erreurs
 
@@ -94,7 +98,21 @@ require_once(__CA_MODELS_DIR__ . '/ca_search_indexing_queue.php');
 require_once(__DIR__ . '/_socle.php');
 
 /**
- * Le moteur configuré.
+ * Nom du moteur à remplir : celui que `--moteur` désigne, sinon celui qui est configuré.
+ *
+ * Nommer le moteur explicitement sert la migration d'une instance en service : on remplit
+ * l'index du nouveau moteur pendant que l'ancien continue de répondre aux usagers, et la
+ * bascule qui suit ne fait que désigner un index déjà prêt. Sans cela, il faudrait basculer
+ * d'abord et réindexer ensuite — c'est-à-dire laisser la recherche vide le temps du travail.
+ */
+function nom_du_moteur(): ?string {
+	global $opts;
+	$nom = $opts['moteur'] ?? null;
+	return (is_string($nom) && strlen($nom)) ? $nom : null;
+}
+
+/**
+ * Le moteur à remplir.
  *
  * `SearchIndexer` garde le sien pour lui ; on en instancie un second, ce qui est sans
  * conséquence : les tampons d'écriture du connecteur sont statiques, partagés par toutes les
@@ -104,8 +122,12 @@ require_once(__DIR__ . '/_socle.php');
 function moteur_de_recherche() {
 	static $moteur = null;
 	if ($moteur === null) {
-		$moteur = SearchBase::newSearchEngine();
-		if (!$moteur) { throw new Exception('Moteur de recherche introuvable — vérifier search_engine_plugin dans app/conf/local/app.conf'); }
+		$moteur = SearchBase::newSearchEngine(nom_du_moteur());
+		if (!$moteur) {
+			throw new Exception(nom_du_moteur()
+				? 'Moteur « ' . nom_du_moteur() . ' » introuvable — vérifier le nom passé à --moteur'
+				: 'Moteur de recherche introuvable — vérifier search_engine_plugin dans app/conf/local/app.conf');
+		}
 	}
 	return $moteur;
 }
@@ -125,7 +147,7 @@ if (isset($opts['part'])) {
 $processus = (int)($opts['processus'] ?? 0);
 if ($processus < 1) { $processus = min(8, max(1, nombre_de_coeurs())); }
 
-$indexeur = new SearchIndexer();
+$indexeur = new SearchIndexer(null, nom_du_moteur());
 $tables   = tables_a_traiter($opts['tables'] ?? null, $indexeur);
 if (!sizeof($tables)) {
 	fwrite(STDERR, "Aucune table à réindexer.\n");
@@ -198,7 +220,7 @@ exit($echecs ? 1 : 0);
 function indexer_part(int $part, int $sur, string $table): int {
 	try {
 		$db        = new Db();
-		$indexeur  = new SearchIndexer($db);
+		$indexeur  = new SearchIndexer($db, nom_du_moteur());
 		$table_num = Datamodel::getTableNum($table);
 		$instance  = Datamodel::getInstanceByTableName($table, true);
 		if (!$instance) { throw new Exception("Table inconnue : {$table}"); }
@@ -245,12 +267,15 @@ function lancer_enfants(int $parts, string $table, string $racine, callable $dir
 
 	for ($i = 0; $i < $parts; $i++) {
 		$commande = sprintf(
-			'%s %s --part=%d --sur=%d --table=%s --racine=%s',
+			'%s %s --part=%d --sur=%d --table=%s --racine=%s%s',
 			escapeshellarg(PHP_BINARY),
 			escapeshellarg(__FILE__),
 			$i, $parts,
 			escapeshellarg($table),
-			escapeshellarg($racine)
+			escapeshellarg($racine),
+			// L'enfant doit remplir le même moteur que le parent, sans quoi il écrirait dans
+			// celui qui est configuré — c'est-à-dire ailleurs.
+			nom_du_moteur() ? ' --moteur=' . escapeshellarg(nom_du_moteur()) : ''
 		);
 
 		$pipes = [];
