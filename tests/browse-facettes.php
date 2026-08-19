@@ -350,6 +350,32 @@ verifier('entity_facet porte la matière fabriquée, à comptes exacts', functio
 # Modes et règles annexes
 # ----------------------------------------------------------------------
 
+verifier('deaccession_facet (type field, booléen) est traduite et compte juste', function () use ($plugin) {
+	$moteur = facette_moteur($plugin, 'deaccession_facet');
+	est_vrai(is_array($moteur), 'le pont a décliné une facette field pourtant traduisible');
+
+	// Le socle recopie son gabarit [id, label] sans content_count pour un booléen : on ne peut
+	// pas comparer les comptes, seulement les identifiants — et vérifier que le nôtre existe.
+	$sql = facette_sql('deaccession_facet');
+	est_egal(array_keys(comptes($sql)), array_keys(comptes($moteur)), 'identifiants de deaccession_facet');
+
+	$db = new Db();
+	$qr = $db->query("SELECT COUNT(*) c FROM ca_objects WHERE deleted = 0 AND is_deaccessioned = 0");
+	$qr->nextRow();
+	$attendu = (int)$qr->get('c');
+	est_egal($attendu, (int)($moteur['0']['content_count'] ?? -1), 'compte des non aliénés');
+});
+
+verifier('une facette field à gabarit ou relative_to décline', function () use ($plugin) {
+	foreach (['submission_user', 'transcribable_facet'] as $facette) {
+		$b = caGetBrowseInstance('ca_objects');
+		$info = $b->getInfoForFacet($facette);
+		if (!is_array($info)) { continue; }
+		est_vrai($plugin->getBrowseFacetContent($b, $facette, $info, []) === null,
+			"{$facette} devrait décliner");
+	}
+});
+
 verifier('checkAvailabilityOnly rend le même verdict', function () use ($plugin) {
 	foreach (['type_facet', 'has_media_facet', 'entity_facet'] as $facette) {
 		$sql    = facette_sql($facette, [], ['checkAvailabilityOnly' => true]);

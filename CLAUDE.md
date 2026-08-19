@@ -58,6 +58,8 @@ sur 8 480, ailleurs que dans notre zone ; le patch est octet pour octet le même
 
 Doctrine du pont : **traduire exactement ou décliner** — un `null` rend la main au SQL du socle,
 facette par facette, sans réglage. Couvert : `fieldList`, `has`, `authority` (avec hiérarchies),
+`field` (booléens et valeurs libres ; déclinés : gabarit, champ adossé à une liste — c'est
+`fieldList` —, et numéro d'inventaire, dont l'indexation éclate en variantes),
 critère `_search` en texte nu, checkAccess, restrictions de type/source, `is_deaccessioned`.
 Décliné d'office : `relative_to`, `filter`, ACL par enregistrement (sorti du périmètre — un seul
 client s'en sert pour la visibilité), `exclude_relationship_types`, plusieurs
@@ -184,6 +186,12 @@ types de relation de métier (`graveur`, `dessinateur`, `origine_decouvreur`, `d
 - **la tolérance du comparateur sur les nœuds hiérarchiques était trop étroite** : elle jugeait
   « branche » d'après les enfants *présents dans la facette*, ce qui rate un ancêtre dont les
   descendants comptés sont des petits-enfants. Elle interroge maintenant la hiérarchie réelle.
+
+**Le type `field` a été ajouté ensuite** (19 août, après-midi) : harnais **28 conformes /
+18 au SQL**, Mayenne **36 / 18**, zéro divergence de part et d'autre. Il apporte un troisième
+écart assumé — **le socle ne rend aucun compte pour un booléen** : sa branche `field` recopie le
+gabarit `['id', 'label']` sans `content_count` (`BrowseEngine.php:5618`), si bien que l'interface
+affiche « Oui / Non » sans nombre. Nous en fournissons un.
 
 **Deux écarts assumés, où c'est le socle qui a tort** — décision prise le 19 août 2026 : on ne
 reproduit pas ses défauts. `comparer-facettes.php` les reconnaît et les compte à part, pour

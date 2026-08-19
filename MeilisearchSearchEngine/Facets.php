@@ -96,8 +96,13 @@ class Facets {
 
 		$type = $facet_info['type'] ?? null;
 		if ($type === null)  { return $this->decliner('facette virtuelle, sans contenu'); }
-		if (!in_array($type, ['fieldList', 'has', 'authority'], true)) {
+		if (!in_array($type, ['fieldList', 'has', 'authority', 'field'], true)) {
 			return $this->decliner("type « {$type} » non traduit");
+		}
+		// Un gabarit compose le libellé à partir d'une table liée en un-vers-plusieurs : c'est
+		// une jointure, pas une distribution.
+		if ($type === 'field' && !empty($facet_info['template'])) {
+			return $this->decliner('facette field à gabarit non traduite');
 		}
 
 		// Options de facette sans traduction exacte : au SQL.
@@ -135,6 +140,8 @@ class Facets {
 			switch ($type) {
 				case 'fieldList':
 					return $this->fieldListFacet($browse, $index, $t_subject, $facet_name, $facet_info, $options, $q, $filter_clauses);
+				case 'field':
+					return $this->fieldFacet($browse, $index, $t_subject, $facet_name, $facet_info, $options, $q, $filter_clauses);
 				case 'has':
 					return $this->hasFacet($browse, $index, $t_subject, $facet_name, $facet_info, $options, $q, $filter_clauses);
 				case 'authority':
@@ -195,6 +202,9 @@ class Facets {
 			switch ($info['type'] ?? null) {
 				case 'fieldList':
 					$clause = $this->fieldListCriterion($subject_table, $info, $values, $fields, $options);
+					break;
+				case 'field':
+					$clause = $this->fieldCriterion($subject_table, $t_subject, $info, $values, $fields);
 					break;
 				case 'has':
 					$clause = $this->hasCriterion($subject_table, $info, $values, $fields);
@@ -297,6 +307,40 @@ class Facets {
 		if (!empty($info['multiple'])) {
 			return '(' . join(' OR ', $per_value) . ')';
 		}
+		return '(' . join(' AND ', $per_value) . ')';
+	}
+
+	/**
+	 * Critère field : égalité sur la valeur de l'intrinsèque. La barre oblique a été échappée
+	 * dans l'identifiant du poste (voir fieldFacet) ; on la rétablit avant de filtrer.
+	 */
+	private function fieldCriterion(string $subject_table, $t_subject, array $info, array $values, array $fields): ?string {
+		$field = $info['field'] ?? null;
+		if (!$field || !empty($info['template'])) { return null; }
+
+		$field_info = \Datamodel::getFieldInfo($subject_table, $field);
+		if (!is_array($field_info)) { return null; }
+		if (isset($field_info['LIST_CODE']) || isset($field_info['LIST'])) { return null; }
+		if ($t_subject->getProperty('ID_NUMBERING_ID_FIELD') === $field) { return null; }
+
+		$attr = $this->schema->fieldName($subject_table, $field);
+		if (!in_array($attr, $fields, true)) { return null; }
+
+		$is_bit = (($field_info['FIELD_TYPE'] ?? null) === FT_BIT);
+
+		$per_value = [];
+		foreach ($values as $value) {
+			$value = str_replace('&#47;', '/', (string)$value);
+			if ($is_bit) {
+				// Le booléen est indexé en nombre ; on couvre les deux écritures possibles.
+				$etat = (int)$value;
+				$per_value[] = '(' . $attr . ' = ' . $etat . ' OR ' . $attr . ' = ' . $this->quote((string)$etat) . ')';
+			} else {
+				$per_value[] = $attr . ' IN ' . $this->inList([$value]);
+			}
+		}
+
+		if (!empty($info['multiple'])) { return '(' . join(' OR ', $per_value) . ')'; }
 		return '(' . join(' AND ', $per_value) . ')';
 	}
 
@@ -414,6 +458,78 @@ class Facets {
 			$values = caSortArrayByKeyInValue($values, ['sort']);
 		}
 		return $values;
+	}
+
+	/**
+	 * Facette field : distribution d'un intrinsèque qui n'est pas adossé à une liste — un
+	 * booléen (« aliéné », « transcriptible »), une clé étrangère, une valeur libre.
+	 *
+	 * Le socle groupe sur la colonne et écarte les valeurs vides, sauf pour un booléen où les
+	 * deux états sont nommés. Il échappe aussi la barre oblique dans l'identifiant du poste,
+	 * qui voyage ensuite dans une URL de browse : on reproduit, sans quoi les identifiants ne
+	 * se correspondraient plus d'un calcul à l'autre.
+	 */
+	private function fieldFacet($browse, string $index, $t_subject, string $facet_name, array $facet_info, array $options, string $q, array $clauses) {
+		$subject_table = $t_subject->tableName();
+		$field         = $facet_info['field'] ?? null;
+		if (!$field) { return $this->decliner('facette sans champ'); }
+
+		$field_info = \Datamodel::getFieldInfo($subject_table, $field);
+		if (!is_array($field_info)) { return $this->decliner("champ « {$field} » inconnu du modèle"); }
+
+		// Un champ adossé à une liste relève de fieldList : le socle y montre des identifiants
+		// bruts, l'index y porte les libellés de l'item. Deux langages, aucun accord possible.
+		if (isset($field_info['LIST_CODE']) || isset($field_info['LIST'])) {
+			return $this->decliner("champ « {$field} » adossé à une liste — relève de fieldList");
+		}
+
+		// Un numéro d'inventaire est indexé éclaté en ses variantes (« CLE.42 » donne aussi
+		// « CLE » et « 42 ») : sa distribution ne serait pas celle de la colonne.
+		if ($t_subject->getProperty('ID_NUMBERING_ID_FIELD') === $field) {
+			return $this->decliner("champ « {$field} » indexé en variantes de numéro");
+		}
+
+		$attr = $this->schema->fieldName($subject_table, $field);
+		if (!$this->engine->isFilterable($index, $attr)) {
+			return $this->decliner("« {$attr} » non déclaré filtrable");
+		}
+
+		$distribution = $this->distribution($index, $attr, $q, $clauses);
+
+		$is_bit = (($field_info['FIELD_TYPE'] ?? null) === FT_BIT);
+
+		if (!empty($options['checkAvailabilityOnly'])) {
+			return sizeof($distribution) > 1;
+		}
+
+		$criteria = $browse->getCriteria($facet_name);
+		if (!is_array($criteria)) { $criteria = []; }
+
+		if ($is_bit) {
+			$oui = $facet_info['label_yes'] ?? _t('Yes');
+			$non = $facet_info['label_no']  ?? _t('No');
+
+			$valeurs = [];
+			foreach ([1 => $oui, 0 => $non] as $etat => $libelle) {
+				// Les booléens arrivent de l'indexeur en nombres ; la distribution les rend en
+				// chaînes, parfois « 1 », parfois « 1.0 ».
+				$compte = (int)(($distribution[(string)$etat] ?? 0) + ($distribution[$etat . '.0'] ?? 0));
+				if (!$compte || isset($criteria[(string)$etat])) { continue; }
+				$valeurs[(string)$etat] = ['id' => $etat, 'label' => $libelle, 'content_count' => $compte];
+			}
+			return $valeurs;
+		}
+
+		$valeurs = [];
+		foreach ($distribution as $valeur => $compte) {
+			$valeur = trim((string)$valeur);
+			if (!strlen($valeur)) { continue; }              // le socle écarte les vides
+			if (isset($criteria[$valeur])) { continue; }     // déjà en critère
+
+			$id = str_replace('/', '&#47;', $valeur);
+			$valeurs[$valeur] = ['id' => $id, 'label' => $valeur, 'content_count' => (int)$compte];
+		}
+		return $valeurs;
 	}
 
 	/**

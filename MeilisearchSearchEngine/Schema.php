@@ -178,6 +178,12 @@ class Schema {
 					if (empty($facet['table']) && !empty($facet['field'])) { $fields[] = (string)$facet['field']; }
 					break;
 
+				case 'field':
+					// Un gabarit compose son libellé par jointure : le pont décline, inutile
+					// de payer un attribut filtrable pour rien.
+					if (empty($facet['template']) && !empty($facet['field'])) { $fields[] = (string)$facet['field']; }
+					break;
+
 				case 'has':
 					if (!empty($facet['element_code'])) {
 						$parts = explode('.', (string)$facet['element_code']);
