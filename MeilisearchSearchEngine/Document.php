@@ -52,6 +52,14 @@ class Document {
 
 		$fragment = [$attribute => $values];
 
+		// Les tranches de dates, pour les éléments que browse.conf facette. Elles se calculent
+		// ici et pas à la recherche : l'index ne porte que le texte affiché d'une date
+		// (« Janvier 2012 »), et le Browse a besoin de toutes les années qu'un intervalle
+		// recouvre.
+		if ($kind === 'attribute') {
+			$fragment += $this->dateBuckets($table_name, $field_name, $values);
+		}
+
 		// Un champ indexé au titre d'une relation typée est aussi indexé sous un attribut
 		// suffixé du code de type, pour permettre les recherches restreintes à un type de lien.
 		if ($rel_type_id = ($options['relationship_type_id'] ?? null)) {
@@ -71,6 +79,92 @@ class Document {
 		$resolved = $this->resolveFieldName($content_tablenum, $content_fieldname);
 		if (!$resolved) { return null; }
 		return $this->schema->fieldName($resolved[0], $resolved[1]);
+	}
+
+	# -------------------------------------------------------
+	# Tranches de dates
+	# -------------------------------------------------------
+
+	/** @var \TimeExpressionParser|null analyseur réutilisé — son instanciation n'est pas gratuite */
+	private static $tep = null;
+
+	/** @var array cache des tranches par expression : [expression][normalisation] => [tranches] */
+	private static $bucket_cache = [];
+
+	/**
+	 * Tranches de dates d'un élément, pour chaque normalisation que browse.conf demande.
+	 *
+	 * L'index ne porte que le texte affiché d'une date — c'est ce que l'indexeur du socle
+	 * transmet — alors que le Browse compte par année, par décennie ou par siècle. On réanalyse
+	 * donc l'expression pour retrouver ses bornes, puis on l'éclate comme le socle le fait à
+	 * l'affichage. Réanalyser ce que CollectiveAccess a lui-même écrit est sûr : c'est
+	 * exactement ce que le socle fait de son côté quand un critère de date lui arrive.
+	 *
+	 * Les garde-fous du socle sont repris : pas de bornes, pas de tranche ; année zéro écartée ;
+	 * et rien au-delà de cinquante ans dans l'avenir, une date aberrante fabriquant sinon des
+	 * facettes démesurées.
+	 *
+	 * @return array [attribut => [tranches]]
+	 */
+	private function dateBuckets(string $table_name, string $element_code, array $values): array {
+		$facets = $this->schema->dateFacets($table_name);
+		if (!isset($facets[$element_code])) { return []; }
+		if (!class_exists('\TimeExpressionParser')) { return []; }
+
+		if (self::$tep === null) { self::$tep = new \TimeExpressionParser(); }
+		$limite = (int)date('Y') + 50;
+
+		$out = [];
+		foreach ($facets[$element_code] as $normalisation) {
+			$tranches = [];
+
+			foreach ($values as $value) {
+				$expression = trim((string)$value);
+				if (!strlen($expression)) { continue; }
+
+				if (!isset(self::$bucket_cache[$expression][$normalisation])) {
+					self::$bucket_cache[$expression][$normalisation] = $this->bucketsFor($expression, $normalisation, $limite);
+				}
+				foreach (self::$bucket_cache[$expression][$normalisation] as $tranche) { $tranches[] = $tranche; }
+			}
+
+			if (sizeof($tranches)) {
+				$out[$this->schema->dateFacetAttribute($element_code, $normalisation)] = array_values(array_unique($tranches));
+			}
+		}
+
+		return $out;
+	}
+
+	/**
+	 * Tranches d'une expression de date, ou tableau vide si elle ne s'analyse pas.
+	 */
+	private function bucketsFor(string $expression, string $normalisation, int $limite): array {
+		try {
+			if (!self::$tep->parse($expression)) { return []; }
+			$bornes = self::$tep->getHistoricTimestamps();
+
+			$debut = $bornes['start'] ?? null;
+			$fin   = $bornes['end'] ?? null;
+			if (!$debut || !$fin) { return []; }
+			if ((int)$fin > $limite) { return []; }
+
+			$normalisees = self::$tep->normalizeDateRange($debut, $fin, $normalisation);
+			if (!is_array($normalisees)) { return []; }
+
+			$tranches = [];
+			foreach ($normalisees as $tranche) {
+				$tranche = (string)$tranche;
+				if (!strlen($tranche)) { continue; }
+				if (is_numeric($tranche) && (int)$tranche === 0) { continue; }   // l'an zéro n'existe pas
+				$tranches[] = $tranche;
+			}
+			return $tranches;
+		} catch (\Exception $e) {
+			// Une expression que l'analyseur refuse ne doit pas faire échouer l'indexation :
+			// la fiche perd ses tranches pour cette date, c'est tout.
+			return [];
+		}
 	}
 
 	# -------------------------------------------------------

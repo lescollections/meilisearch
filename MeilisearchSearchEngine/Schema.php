@@ -46,6 +46,17 @@ class Schema {
 	const FACET_DIRECT = 'facet_direct__';
 
 	/**
+	 * Préfixe des tranches de dates : `facet_date__creation_date__years` porte toutes les
+	 * années qu'un intervalle recouvre, `…__decades` toutes ses décennies.
+	 *
+	 * Le socle éclate chaque intervalle en ses tranches puis dédoublonne par fiche ; une
+	 * distribution sur cet attribut rend donc exactement le même compte, la déduplication
+	 * étant acquise — Meilisearch compte des documents. Et comme un critère de date s'applique
+	 * en recouvrement d'intervalles, l'égalité sur une tranche sélectionne les mêmes fiches.
+	 */
+	const FACET_DATE = 'facet_date__';
+
+	/**
 	 * Tables primaires dont les enregistrements liés sont rangés en facettes. La liste est
 	 * fermée : tout ce qui n'y figure pas (tables de labels, de relations…) passe par
 	 * l'indexation texte ordinaire.
@@ -139,7 +150,69 @@ class Schema {
 		foreach ($this->facetedFields($subject_table) as $field) {
 			$attributes[] = $this->fieldName($subject_table, $field);
 		}
+		foreach ($this->dateFacets($subject_table) as $code => $normalisations) {
+			foreach ($normalisations as $normalisation) {
+				$attributes[] = $this->dateFacetAttribute($code, $normalisation);
+			}
+		}
 		return array_values(array_unique($attributes));
+	}
+
+	/**
+	 * Attribut portant les tranches d'un élément de date, pour une normalisation donnée.
+	 */
+	public function dateFacetAttribute(string $element_code, string $normalisation): string {
+		return self::FACET_DATE . $this->sanitize($element_code) . '__' . $this->sanitize($normalisation);
+	}
+
+	/**
+	 * Éléments de date que `browse.conf` demande de facetter, et sous quelles normalisations.
+	 *
+	 * Un même élément sert souvent deux facettes — par année et par décennie — d'où la liste.
+	 * Les facettes que le pont ne traduit pas de toute façon sont écartées ici : inutile de
+	 * payer des tranches à l'indexation pour une facette qui repartira au SQL.
+	 *
+	 * @return array [code d'élément => [normalisations]]
+	 */
+	public function dateFacets(string $subject_table): array {
+		static $cache = [];
+		if (isset($cache[$subject_table])) { return $cache[$subject_table]; }
+
+		if (!class_exists('\Configuration')) { return $cache[$subject_table] = []; }
+
+		try {
+			$config = \Configuration::load(__CA_CONF_DIR__ . '/browse.conf');
+			$settings = $config ? $config->getAssoc($subject_table) : null;
+		} catch (\Exception $e) {
+			return $cache[$subject_table] = [];
+		}
+		if (!is_array($settings) || !is_array($settings['facets'] ?? null)) { return $cache[$subject_table] = []; }
+
+		$out = [];
+		foreach ($settings['facets'] as $facet) {
+			if (!is_array($facet) || ($facet['type'] ?? null) !== 'normalizedDates') { continue; }
+			if (empty($facet['element_code']) || empty($facet['normalization'])) { continue; }
+
+			// Options que le pont ne sait pas traduire : la facette repartira au SQL, ses
+			// tranches ne serviraient à rien.
+			foreach (['relative_to', 'include_unknown', 'minimum_date', 'maximum_date',
+				'treat_before_dates_as_circa', 'treat_after_dates_as_circa', 'single_value'] as $key) {
+				if (!empty($facet[$key])) { continue 2; }
+			}
+
+			// `creation_date` ou `conteneur.creation_date` : c'est le dernier segment qui
+			// nomme l'élément, comme le fait le socle.
+			$parts = explode('.', (string)$facet['element_code']);
+			$code  = (string)array_pop($parts);
+			if (sizeof($parts) > 1) { continue; }   // élément dans un conteneur : au SQL
+
+			$out[$code][] = (string)$facet['normalization'];
+		}
+
+		foreach ($out as $code => $normalisations) {
+			$out[$code] = array_values(array_unique($normalisations));
+		}
+		return $cache[$subject_table] = $out;
 	}
 
 	/**

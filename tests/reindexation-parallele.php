@@ -47,7 +47,15 @@ function empreinte_index($client, string $index): array {
 	do {
 		$r = $client->getDocuments($index, 1000, $offset);
 		foreach (($r['results'] ?? []) as $doc) {
-			$empreintes[$doc['id']] = md5(json_encode(normaliser_document($doc)));
+			$normalise = normaliser_document($doc);
+			// Deux empreintes et non une : celle du document entier dit *qu'il* diffère, celle
+			// des seuls noms de champs dit *en quoi* — un champ absent ou un champ en trop n'a
+			// pas la même cause qu'une valeur qui a changé. Sans cette distinction, le message
+			// d'échec ne peut nommer que les premiers attributs du document, ce qui n'oriente
+			// rien et fait perdre le diagnostic (constaté).
+			$champs = array_keys($normalise);
+			sort($champs);
+			$empreintes[$doc['id']] = ['tout' => md5(json_encode($normalise)), 'champs' => md5(join('|', $champs))];
 		}
 		$offset += 1000;
 	} while (sizeof($r['results'] ?? []) === 1000);
@@ -116,21 +124,21 @@ verifier('les mêmes identifiants', function () use ($reference, $parallele) {
 
 verifier('le même contenu, document par document', function () use ($reference, $parallele, $client, $index) {
 	$divergents = [];
+	$par_champs = 0;
 	foreach ($reference as $id => $empreinte) {
 		if (!isset($parallele[$id])) { continue; }
-		if ($empreinte !== $parallele[$id]) { $divergents[] = $id; }
+		if ($empreinte['tout'] === $parallele[$id]['tout']) { continue; }
+		$divergents[$id] = ($empreinte['champs'] !== $parallele[$id]['champs']) ? 'jeu de champs' : 'valeurs';
+		if ($empreinte['champs'] !== $parallele[$id]['champs']) { $par_champs++; }
 		if (sizeof($divergents) >= 5) { break; }
 	}
 
-	// L'empreinte dit qu'ils diffèrent, pas en quoi : on relit ceux-là seulement. L'état de
-	// l'index est celui de la réindexation parallèle — on ne peut donc nommer que les champs
-	// tels qu'elle les a écrits, ce qui suffit à orienter le diagnostic.
 	$details = [];
-	foreach (documents_par_id($client, $index, $divergents) as $id => $doc) {
-		$details[] = "#{$id} (" . join(', ', array_slice(array_keys($doc), 0, 4)) . ')';
-	}
+	foreach ($divergents as $id => $nature) { $details[] = "#{$id} ({$nature})"; }
 
-	est_vrai(!sizeof($divergents), sizeof($divergents) . ' document(s) différent(s) : ' . join(' ; ', $details));
+	est_vrai(!sizeof($divergents), sprintf(
+		'%d document(s) différent(s), dont %d par le jeu de champs : %s',
+		sizeof($divergents), $par_champs, join(' ; ', $details)));
 });
 
 titre('La recherche donne les mêmes résultats');

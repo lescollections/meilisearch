@@ -58,8 +58,18 @@ define('SOURCE_DIAGNOSTIC', 'meilisearch-diagnostic');
 
 $mode = 'batterie';
 $argument = null;
+// Sélection dans l'historique. Par défaut on prend les plus récentes, comme avant ; --tri=resultats
+// permet de viser les recherches les plus fournies, qui jugent le moteur sur un grand ensemble
+// plutôt que sur trois fiches. --jours borne la fenêtre : plus la recherche est ancienne, plus le
+// fonds a eu le temps de grossir, et plus l'écart de comptage devient ininterprétable.
+$jours = 0;
+$min_resultats = 0;
+$tri = 'date';
 foreach (array_slice($argv, 1) as $a) {
 	if (preg_match('!^--historique(?:=(\d+))?$!', $a, $m)) { $mode = 'historique'; $argument = (int)($m[1] ?? 200); }
+	elseif (preg_match('!^--jours=(\d+)$!', $a, $m)) { $jours = (int)$m[1]; }
+	elseif (preg_match('!^--min-resultats=(\d+)$!', $a, $m)) { $min_resultats = (int)$m[1]; }
+	elseif (preg_match('!^--tri=(resultats|date)$!', $a, $m)) { $tri = $m[1]; }
 	elseif ($a === '--plan') { $mode = 'plan'; }
 	elseif ($mode === 'plan' && $argument === null) { $argument = $a; }
 }
@@ -169,13 +179,27 @@ if ($mode === 'plan') {
 
 if ($mode === 'historique') {
 	$table_num = Datamodel::getTableNum('ca_objects');
+	// Une expression revient des milliers de fois ; on ne garde que son occurrence la plus
+	// récente, dont le num_hits est le plus proche du fonds d'aujourd'hui. L'étoile seule est
+	// écartée : elle veut dire « tout le fonds », ce n'est pas un terme de recherche.
+	$depuis = $jours ? (time() - $jours * 86400) : 0;
+	$ordre  = ($tri === 'resultats') ? 'num_hits DESC' : 'log_datetime DESC';
+
 	$qr = $db->query("
-		SELECT search_expression, num_hits, execution_time, log_datetime, search_source
-		FROM ca_search_log
-		WHERE table_num = ? AND search_expression <> ''
-		  AND search_source NOT LIKE ?
-		ORDER BY log_datetime DESC
-		LIMIT " . (int)$argument, [$table_num, '%' . SOURCE_DIAGNOSTIC . '%']);
+		SELECT search_expression, num_hits, execution_time, log_datetime
+		FROM (
+			SELECT search_expression, num_hits, execution_time, log_datetime,
+			       ROW_NUMBER() OVER (PARTITION BY search_expression ORDER BY log_datetime DESC) AS rang
+			FROM ca_search_log
+			WHERE table_num = ? AND search_expression NOT IN ('', '*')
+			  AND search_source NOT LIKE ?
+			  AND log_datetime >= ?
+			  AND num_hits >= ?
+		) t
+		WHERE rang = 1
+		ORDER BY {$ordre}
+		LIMIT " . (int)$argument,
+		[$table_num, '%' . SOURCE_DIAGNOSTIC . '%', $depuis, $min_resultats]);
 
 	$lignes = [];
 	while ($qr->nextRow()) {

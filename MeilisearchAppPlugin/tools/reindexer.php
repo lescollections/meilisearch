@@ -13,12 +13,21 @@
  * reindex()` énumère les identifiants d'une table et boucle dessus, sans rien exposer pour
  * partitionner le travail. Mais en mode réindexation complète, `indexRow()` est indépendant
  * d'une ligne à l'autre — chaque ligne est visitée une fois et une seule. Il suffit donc de
- * découper l'ensemble des identifiants et de confier chaque part à un processus.
+ * en faire une file où chaque processus vient puiser.
+ *
+ * La file est dynamique, et c'est le point important : un découpage figé d'avance équilibre le
+ * nombre de lignes, jamais leur coût. Une fiche riche en métadonnées demande bien plus de travail
+ * qu'une fiche nue, et ces fiches ne se répartissent pas uniformément selon les identifiants. En
+ * puisant lot par lot, un ouvrier qui finit tôt reprend du travail au lieu de laisser les autres
+ * terminer seuls.
  *
  * Trois précautions, qui expliquent la forme du programme :
  *
  *   • l'index n'est tronqué qu'une fois, par le parent, avant de lancer qui que ce soit.
  *     Un enfant qui tronquerait effacerait le travail des autres ;
+ *
+ *   • la file et son curseur sont écrits par le parent dans un fichier temporaire ; le curseur
+ *     est un entier protégé par un verrou exclusif, seul point de synchronisation entre ouvriers ;
  *
  *   • `__CollectiveAccess_IS_REINDEXING__` est posée dans chaque processus. Sans elle,
  *     l'indexeur croit être en mise à jour et va chercher des dépendances qui n'ont pas lieu
@@ -57,6 +66,7 @@ Réindexation complète en parallèle.
                   (ex. --moteur=Meilisearch pendant que SqlSearch2 sert encore :
                   l'index se remplit sans que la recherche en service soit touchée,
                   et la bascule qui suit trouve un index déjà prêt)
+  --lot=N         identifiants retirés de la file à chaque fois (défaut : 100)
   --racine=/chemin  racine de Providence, si elle n'est pas déduite correctement
   --silencieux    n'affiche que les erreurs
 
@@ -136,8 +146,13 @@ function moteur_de_recherche() {
 # Mode enfant : indexer une part
 # ----------------------------------------------------------------------
 
-if (isset($opts['part'])) {
-	exit(indexer_part((int)$opts['part'], (int)$opts['sur'], (string)$opts['table']));
+if (isset($opts['travail'])) {
+	exit(indexer_dynamique(
+		(string)$opts['table'],
+		(string)$opts['travail'],
+		(string)$opts['curseur'],
+		(int)($opts['lot'] ?? 100)
+	));
 }
 
 # ----------------------------------------------------------------------
@@ -146,6 +161,10 @@ if (isset($opts['part'])) {
 
 $processus = (int)($opts['processus'] ?? 0);
 if ($processus < 1) { $processus = min(8, max(1, nombre_de_coeurs())); }
+
+// Taille du lot que chaque ouvrier retire de la file. Elle fixe le déséquilibre résiduel en
+// fin de table : au pire un ouvrier finit un lot pendant que les autres attendent.
+$lot = max(1, (int)($opts['lot'] ?? 100));
 
 $indexeur = new SearchIndexer(null, nom_du_moteur());
 $tables   = tables_a_traiter($opts['tables'] ?? null, $indexeur);
@@ -183,13 +202,18 @@ foreach ($tables as $table) {
 	// chacun doit charger CollectiveAccess avant d'indexer sa première ligne.
 	$parts = ($n < 250) ? 1 : $processus;
 
+	// La file de travail est écrite une seule fois, par le parent ; les ouvriers y puisent.
+	[$fichier_travail, $fichier_curseur] = ecrire_file_de_travail($ids);
+
 	if ($parts === 1) {
-		$code = indexer_part(0, 1, $table['name']);
-		if ($code !== 0) { $echecs++; }
+		$code = indexer_dynamique($table['name'], $fichier_travail, $fichier_curseur, $lot);
 	} else {
-		$code = lancer_enfants($parts, $table['name'], $racine, $dire);
-		if ($code !== 0) { $echecs++; }
+		$code = lancer_enfants($parts, $table['name'], $racine, $fichier_travail, $fichier_curseur, $lot);
 	}
+	if ($code !== 0) { $echecs++; }
+
+	@unlink($fichier_travail);
+	@unlink($fichier_curseur);
 
 	$duree = microtime(true) - $t0;
 	$dire(sprintf("  %-28s %6d lignes  %6.1f s  %7.0f lignes/s\n",
@@ -206,18 +230,82 @@ exit($echecs ? 1 : 0);
 # ----------------------------------------------------------------------
 
 /**
- * Indexe les lignes dont l'identifiant vaut $part modulo $sur.
+ * Écrit la file de travail : les identifiants à traiter, plus un curseur partagé.
  *
- * Le découpage est fait par modulo et non par plage : les identifiants d'une base réelle sont
- * troués (suppressions, imports partiels), et des plages égales donneraient des parts très
- * inégales. Le modulo répartit ce qui existe.
+ * Les identifiants sont rangés en binaire, huit octets chacun, pour qu'un ouvrier puisse sauter
+ * directement au n-ième sans lire ce qui précède. Le curseur est un simple entier dans un
+ * fichier à part, protégé par un verrou exclusif.
+ *
+ * @return array [chemin des identifiants, chemin du curseur]
+ */
+function ecrire_file_de_travail(array $ids): array {
+	$fichier = tempnam(sys_get_temp_dir(), 'meili-travail-');
+	$curseur = $fichier . '.curseur';
+
+	$f = fopen($fichier, 'wb');
+	if (!$f) { throw new Exception("File de travail impossible à écrire : {$fichier}"); }
+	foreach ($ids as $id) { fwrite($f, pack('J', (int)$id)); }
+	fclose($f);
+
+	file_put_contents($curseur, '0');
+	@chmod($fichier, 0664);
+	@chmod($curseur, 0664);
+
+	return [$fichier, $curseur];
+}
+
+/**
+ * Retire le prochain lot de la file, sous verrou exclusif.
+ *
+ * C'est le seul point de synchronisation entre ouvriers, et il ne dure que le temps de lire et
+ * de réécrire un entier.
+ *
+ * @return array [rang du premier identifiant, nombre d'identifiants] — [0, 0] quand la file est vide
+ */
+function prendre_lot(string $curseur, int $total, int $lot): array {
+	$f = fopen($curseur, 'c+');
+	if (!$f) { throw new Exception("Curseur illisible : {$curseur}"); }
+	if (!flock($f, LOCK_EX)) { fclose($f); throw new Exception("Verrou du curseur impossible : {$curseur}"); }
+
+	rewind($f);
+	$debut = (int)stream_get_contents($f);
+
+	if ($debut >= $total) {
+		flock($f, LOCK_UN);
+		fclose($f);
+		return [0, 0];
+	}
+
+	$combien = min($lot, $total - $debut);
+	ftruncate($f, 0);
+	rewind($f);
+	fwrite($f, (string)($debut + $combien));
+	fflush($f);
+	flock($f, LOCK_UN);
+	fclose($f);
+
+	return [$debut, $combien];
+}
+
+/**
+ * Indexe les lignes que l'ouvrier retire de la file, lot après lot, jusqu'à l'épuiser.
+ *
+ * Le découpage était auparavant statique — chaque processus recevait les identifiants valant
+ * son rang modulo le nombre de processus. Cela équilibre le NOMBRE de lignes, jamais leur COÛT :
+ * une fiche riche en métadonnées demande bien plus de travail qu'une fiche nue, et la répartition
+ * de ces fiches ne suit pas les identifiants. Mesuré sur les 253 392 objets de l'instance 130.32,
+ * le débit tombait de 25,9 à 13,6 lignes par seconde à mesure que les parts légères s'achevaient,
+ * la fin de table étant dictée par la part la plus lourde restée seule.
+ *
+ * En puisant dans une file commune, un ouvrier qui finit tôt reprend aussitôt du travail : le
+ * déséquilibre résiduel ne dépasse jamais un lot.
  *
  * On reproduit fidèlement ce que fait SearchIndexer::reindex(), préchargement compris : sans
  * lui, chaque ligne redemande ses attributs une par une.
  *
  * @return int code de sortie
  */
-function indexer_part(int $part, int $sur, string $table): int {
+function indexer_dynamique(string $table, string $fichier, string $curseur, int $lot): int {
 	try {
 		$db        = new Db();
 		$indexeur  = new SearchIndexer($db, nom_du_moteur());
@@ -225,25 +313,31 @@ function indexer_part(int $part, int $sur, string $table): int {
 		$instance  = Datamodel::getInstanceByTableName($table, true);
 		if (!$instance) { throw new Exception("Table inconnue : {$table}"); }
 
-		$ids = identifiants($table, $part, $sur, $db);
-		if (!sizeof($ids)) { return 0; }
-
 		$element_ids = method_exists($instance, 'getApplicableElementCodes')
 			? array_keys($instance->getApplicableElementCodes(null, false, false))
 			: null;
 
-		$field_data = [];
-		foreach ($ids as $i => $id) {
-			if (!($i % 100)) {
-				$tranche = array_slice($ids, $i, 100);
-				if ($element_ids) { ca_attributes::prefetchAttributes($db, $table_num, $tranche, $element_ids); }
-				$field_data = donnees_de_champs($indexeur, $table, $tranche, $db);
-				// Sans ce vidage, les caches de SearchResult grossissent jusqu'à saturer la
-				// mémoire sur une grande table.
-				SearchResult::clearCaches();
+		$fh = fopen($fichier, 'rb');
+		if (!$fh) { throw new Exception("File de travail illisible : {$fichier}"); }
+		$total = (int)(filesize($fichier) / 8);
+
+		while (true) {
+			[$debut, $combien] = prendre_lot($curseur, $total, $lot);
+			if (!$combien) { break; }
+
+			fseek($fh, $debut * 8);
+			$ids = array_values(unpack('J*', (string)fread($fh, $combien * 8)));
+
+			if ($element_ids) { ca_attributes::prefetchAttributes($db, $table_num, $ids, $element_ids); }
+			$field_data = donnees_de_champs($indexeur, $table, $ids, $db);
+			// Sans ce vidage, les caches de SearchResult grossissent jusqu'à saturer la mémoire.
+			SearchResult::clearCaches();
+
+			foreach ($ids as $id) {
+				$indexeur->indexRow($table_num, $id, $field_data[$id] ?? [], true);
 			}
-			$indexeur->indexRow($table_num, $id, $field_data[$id] ?? [], true);
 		}
+		fclose($fh);
 
 		// Le tampon du connecteur n'est vidé qu'ici : il ne l'est automatiquement qu'à la
 		// destruction de l'objet, ce qui arriverait trop tard pour que le parent puisse
@@ -252,7 +346,7 @@ function indexer_part(int $part, int $sur, string $table): int {
 
 		return 0;
 	} catch (Throwable $e) {
-		fwrite(STDERR, sprintf("Part %d/%d de %s en échec : %s\n", $part, $sur, $table, $e->getMessage()));
+		fwrite(STDERR, sprintf("Ouvrier de %s en échec : %s\n", $table, $e->getMessage()));
 		return 1;
 	}
 }
@@ -262,15 +356,17 @@ function indexer_part(int $part, int $sur, string $table): int {
  *
  * @return int 0 si tous ont abouti
  */
-function lancer_enfants(int $parts, string $table, string $racine, callable $dire): int {
+function lancer_enfants(int $parts, string $table, string $racine, string $fichier, string $curseur, int $lot): int {
 	$enfants = [];
 
 	for ($i = 0; $i < $parts; $i++) {
 		$commande = sprintf(
-			'%s %s --part=%d --sur=%d --table=%s --racine=%s%s',
+			'%s %s --travail=%s --curseur=%s --lot=%d --table=%s --racine=%s%s',
 			escapeshellarg(PHP_BINARY),
 			escapeshellarg(__FILE__),
-			$i, $parts,
+			escapeshellarg($fichier),
+			escapeshellarg($curseur),
+			$lot,
 			escapeshellarg($table),
 			escapeshellarg($racine),
 			// L'enfant doit remplir le même moteur que le parent, sans quoi il écrirait dans
@@ -286,7 +382,7 @@ function lancer_enfants(int $parts, string $table, string $racine, callable $dir
 		}
 		stream_set_blocking($pipes[1], false);
 		stream_set_blocking($pipes[2], false);
-		$enfants[] = ['proc' => $p, 'pipes' => $pipes, 'part' => $i, 'err' => ''];
+		$enfants[] = ['proc' => $p, 'pipes' => $pipes, 'rang' => $i, 'err' => ''];
 	}
 
 	$echecs = 0;
@@ -307,7 +403,7 @@ function lancer_enfants(int $parts, string $table, string $racine, callable $dir
 
 		if ($code !== 0) {
 			$echecs++;
-			fwrite(STDERR, sprintf("  part %d de %s : code %d\n%s\n", $enfant['part'], $table, $code, trim($enfant['err'])));
+			fwrite(STDERR, sprintf("  ouvrier %d de %s : code %d\n%s\n", $enfant['rang'], $table, $code, trim($enfant['err'])));
 		} elseif (trim($enfant['err']) !== '') {
 			fwrite(STDERR, trim($enfant['err']) . "\n");
 		}
@@ -317,16 +413,18 @@ function lancer_enfants(int $parts, string $table, string $racine, callable $dir
 }
 
 /**
- * Identifiants d'une table, éventuellement restreints à une part.
+ * Identifiants d'une table, dans l'ordre de la clé primaire.
+ *
+ * La liste entière est rendue au parent, qui en fait la file de travail ; le découpage n'est
+ * plus décidé ici.
  */
-function identifiants(string $table, int $part = 0, int $sur = 1, ?Db $db = null): array {
+function identifiants(string $table, ?Db $db = null): array {
 	$db       = $db ?: new Db();
 	$instance = Datamodel::getInstanceByTableName($table, true);
 	$pk       = $instance->primaryKey();
 
 	$where = [];
 	if ($instance->hasField('deleted')) { $where[] = 'deleted = 0'; }
-	if ($sur > 1) { $where[] = "({$pk} % {$sur}) = {$part}"; }
 
 	$sql = "SELECT {$pk} FROM {$table}" . (sizeof($where) ? ' WHERE ' . join(' AND ', $where) : '') . " ORDER BY {$pk}";
 	return $db->query($sql)->getAllFieldValues($pk);
