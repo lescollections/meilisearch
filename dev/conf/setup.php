@@ -17,7 +17,13 @@ define('__CA_DB_DATABASE__', getenv('CA_DB_DATABASE') ?: 'collectiveaccess');
 define('__CA_APP_DISPLAY_NAME__', 'Meilisearch — développement');
 define('__CA_ADMIN_EMAIL__',      getenv('CA_ADMIN_EMAIL') ?: 'dev@meilisearch.test');
 define('__CA_AUTH_ADAPTER__',     'CaUsers');
-define('__CA_APP_NAME__',         'meilisearch');
+// Le nom de l'instance porte celui de la base, et ce n'est pas cosmétique : le cache de
+// CollectiveAccess vit dans <tmp>/<__CA_APP_NAME__>Cache (ExternalCache.php:241), sans rien qui
+// distingue les bases. Deux bases servies par la même arborescence — le corpus CMA et une base
+// cliente rapatriée — partageaient donc leurs listes en cache, et une facette rendait les
+// libellés de l'autre. Symptôme trompeur : des divergences qui apparaissent et disparaissent
+// selon l'ordre des exécutions.
+define('__CA_APP_NAME__',         'meilisearch' . ((getenv('CA_DB_DATABASE') && getenv('CA_DB_DATABASE') !== 'collectiveaccess') ? '_' . preg_replace('![^A-Za-z0-9_]!', '_', getenv('CA_DB_DATABASE')) : ''));
 
 date_default_timezone_set('Europe/Paris');
 define('__CA_DEFAULT_LOCALE__', 'fr_FR');
