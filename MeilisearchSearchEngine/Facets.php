@@ -695,7 +695,15 @@ class Facets {
 			foreach ($rows as $id => $row) {
 				$label = $labels[$id] ?? null;
 				if (is_array($label)) { $label = reset($label); }
-				$rows[$id]['label'] = strlen((string)$label) ? (string)$label : '???';
+				$label = (string)$label;
+
+				// Une autorité sans étiquette préférée disparaît de la facette du socle : sa
+				// requête de libellés ne la rend pas, et caExtractValuesByUserLocale écarte
+				// l'entrée vide. Rendre « ??? » à sa place ferait apparaître dans la facette
+				// une valeur que le SQL n'y met pas — et qui ne dirait rien à personne.
+				if (!strlen($label)) { unset($rows[$id]); continue; }
+
+				$rows[$id]['label'] = $label;
 			}
 		}
 

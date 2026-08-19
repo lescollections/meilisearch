@@ -165,6 +165,49 @@ reconstruit, et la structure est conservée. Le socle porte une commande dédié
 > du CMA et leur index restent intacts. **Ne pas oublier le préfixe** — sans lui, la
 > réindexation de la migration écrirait dans l'index du corpus CMA.
 
+### Mayenne dans le harnais — le premier fonds réellement relationnel
+
+La base de recette (CollectiveAccess 1.7) est rapatriée, restaurée à côté du corpus CMA et
+migrée en 2.0 par `caUtils update-from-1-7` (schéma 158 → 212, 20 min d'indexation). C'est le
+premier jeu de données qui éprouve vraiment les autorités : **24 709 liens objets-entités**,
+4 339 vers des lieux hiérarchiques, 2 786 vers des occurrences, 9 609 représentations, avec des
+types de relation de métier (`graveur`, `dessinateur`, `origine_decouvreur`, `decouverte`…).
+
+`comparer-facettes.php --criteres` : **30 conformes, 20 au SQL, 4 divergentes.**
+
+**Deux divergences trouvées et corrigées de notre côté :**
+
+- **une autorité sans étiquette préférée doit disparaître de la facette.** Le socle ne la rend
+  pas (sa requête de libellés est séparée, et l'entrée vide est écartée) ; le pont la gardait
+  sous « ??? », ajoutant à la facette une valeur que le SQL n'y met pas. Un seul cas dans tout
+  le fonds — la racine des lieux de rangement — et il suffisait à faire diverger la facette ;
+- **la tolérance du comparateur sur les nœuds hiérarchiques était trop étroite** : elle jugeait
+  « branche » d'après les enfants *présents dans la facette*, ce qui rate un ancêtre dont les
+  descendants comptés sont des petits-enfants. Elle interroge maintenant la hiérarchie réelle.
+
+**Deux divergences qui restent, et où c'est le socle qui a tort :**
+
+- **le SQL surcompte les autorités liées par plusieurs types de relation.** Sa requête groupe
+  par autorité *et* par `rel_type_id`, puis additionne les lignes (`BrowseEngine.php:7232`).
+  L'entité 1043 de Mayenne a 8 liens vers 4 objets distincts — chacun lié deux fois — et le SQL
+  affiche 4 là où cliquer en rend 2. Notre compte est celui des fiches, c'est-à-dire de ce que
+  le clic rend vraiment ;
+- **une facette `fieldList` perd les valeurs dont l'item de liste est supprimé.** 17 objets de
+  Mayenne portent un `type_id` dont l'item est `deleted = 1` ; l'indexeur du socle n'écrit rien
+  pour eux (il indexe les *libellés* de l'item, et un item supprimé n'en a plus), tandis que sa
+  facette SQL, qui lit `ca_objects.type_id` directement, les affiche encore. **C'est le
+  corollaire de fond de la délégation : tout ce que l'indexeur saute devient invisible aux
+  facettes**, alors que le SQL du socle atteint des données que l'index n'a pas. Même famille
+  que les « recherches muettes » notées plus haut.
+
+> **Piège coûteux : le cache de CollectiveAccess ignore la base.** Il vit dans
+> `<tmp>/<__CA_APP_NAME__>Cache` (`ExternalCache.php:241`) ; deux bases servies par la même
+> arborescence partagent donc leurs listes en cache. Symptôme observé : une facette de types du
+> corpus CMA rendant les libellés de Mayenne (« Ethnologie », « Histoire naturelle ») et perdant
+> deux valeurs — des divergences qui apparaissent et disparaissent selon l'ordre des exécutions.
+> `dev/conf/setup.php` fait désormais porter le nom de la base à `__CA_APP_NAME__`. **Sur une
+> instance réelle, ne jamais servir deux bases depuis la même arborescence sans le faire.**
+
 ### À reprendre là (facettes)
 
 1. **Décider la bascule de floutier** (une ligne dans `app/conf/local/app.conf`), au vu de ce qui

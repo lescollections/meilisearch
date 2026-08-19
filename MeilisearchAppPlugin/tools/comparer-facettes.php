@@ -86,6 +86,28 @@ $browse_neuf = function (array $criteres = []) use ($table) {
 	return $b;
 };
 
+/**
+ * Cet enregistrement a-t-il des descendants dans sa hiérarchie ?
+ *
+ * C'est la question qui distingue une divergence d'un écart légitime : sur un nœud
+ * non-feuille, le SQL du socle additionne les comptes de ses branches — un enregistrement
+ * rattaché à deux descendants y est compté deux fois — là où le moteur compte les documents
+ * distincts. Le compte du moteur est le bon ; l'écart n'est pas une divergence.
+ */
+function est_une_branche(?string $table, $id): bool {
+	static $cache = [];
+	if (!$table || !is_numeric($id)) { return false; }
+
+	$cle = $table . '/' . $id;
+	if (isset($cache[$cle])) { return $cache[$cle]; }
+
+	$t = Datamodel::getInstanceByTableName($table, true);
+	if (!$t || !$t->hasField('parent_id')) { return $cache[$cle] = false; }
+
+	$qr = (new Db())->query("SELECT 1 FROM {$table} WHERE parent_id = ? LIMIT 1", [(int)$id]);
+	return $cache[$cle] = (bool)$qr->nextRow();
+}
+
 /** Réduit un contenu de facette à [id => compte]. */
 $comptes = function ($contenu): array {
 	$out = [];
@@ -157,8 +179,11 @@ $comparer = function (string $facette, array $criteres, string $intitule)
 
 	foreach ($c_sql as $id => $n) {
 		if (!isset($c_ms[$id]) || $c_ms[$id] === $n) { continue; }
-		// Un nœud non-feuille : le SQL somme les descendants, le moteur compte les documents.
-		if ((int)($ms[$id]['child_count'] ?? 0) > 0) { $branches++; continue; }
+		// Un nœud non-feuille : le SQL somme les branches, le moteur compte les documents
+		// distincts. On interroge la hiérarchie réelle plutôt que les seuls enfants présents
+		// dans la facette — un ancêtre dont les descendants comptés sont des petits-enfants
+		// n'a aucun enfant *dans la facette*, et passerait pour une feuille.
+		if (est_une_branche($info['table'] ?? null, $id)) { $branches++; continue; }
 		$ecarts[] = sprintf('%s (SQL %d ≠ moteur %d)', $id, $n, $c_ms[$id]);
 	}
 
