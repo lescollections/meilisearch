@@ -185,13 +185,17 @@ types de relation de métier (`graveur`, `dessinateur`, `origine_decouvreur`, `d
   « branche » d'après les enfants *présents dans la facette*, ce qui rate un ancêtre dont les
   descendants comptés sont des petits-enfants. Elle interroge maintenant la hiérarchie réelle.
 
-**Deux divergences qui restent, et où c'est le socle qui a tort :**
+**Deux écarts assumés, où c'est le socle qui a tort** — décision prise le 19 août 2026 : on ne
+reproduit pas ses défauts. `comparer-facettes.php` les reconnaît et les compte à part, pour
+qu'ils cessent de crier au loup ; le bilan de Mayenne est donc **34 conformes, 20 au SQL,
+58 assumés, 0 divergente**.
 
 - **le SQL surcompte les autorités liées par plusieurs types de relation.** Sa requête groupe
   par autorité *et* par `rel_type_id`, puis additionne les lignes (`BrowseEngine.php:7232`).
-  L'entité 1043 de Mayenne a 8 liens vers 4 objets distincts — chacun lié deux fois — et le SQL
-  affiche 4 là où cliquer en rend 2. Notre compte est celui des fiches, c'est-à-dire de ce que
-  le clic rend vraiment ;
+  Ce n'est pas anecdotique : **27 entités de Mayenne** sont dans ce cas, dont une qui affiche
+  **108 là où le clic rend 54 fiches**. Notre compte est celui des fiches, c'est-à-dire de ce
+  que le clic rend vraiment. L'outil le reconnaît à l'existence d'un doublon dans la table de
+  liens ;
 - **une facette `fieldList` perd les valeurs dont l'item de liste est supprimé.** 17 objets de
   Mayenne portent un `type_id` dont l'item est `deleted = 1` ; l'indexeur du socle n'écrit rien
   pour eux (il indexe les *libellés* de l'item, et un item supprimé n'en a plus), tandis que sa
