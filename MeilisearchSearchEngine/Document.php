@@ -74,6 +74,108 @@ class Document {
 	}
 
 	# -------------------------------------------------------
+	# Facettes
+	# -------------------------------------------------------
+
+	/** @var array cache des ancêtres hiérarchiques : [table][row_id] => [ids] */
+	private static $ancestor_cache = [];
+
+	/** @var \Db|null connexion paresseuse, pour écarter les racines techniques */
+	private static $db = null;
+
+	private function db(): \Db {
+		if (self::$db === null) { self::$db = new \Db(); }
+		return self::$db;
+	}
+
+	/** @var array tables dont on sait déjà si elles sont hiérarchiques : [table] => bool */
+	private static $is_hierarchical = [];
+
+	/**
+	 * Fragment de facette pour un enregistrement lié : l'identifiant de l'enregistrement — et
+	 * ceux de ses ancêtres si la table est hiérarchique — rangés sous `facet__<table>`, plus la
+	 * variante par type de relation quand le lien est typé.
+	 *
+	 * Les ancêtres sont la clef des facettes hiérarchiques : un objet lié à « Addis-Abeba »
+	 * doit compter pour « Abyssinie » ; le moteur ne connaissant pas les hiérarchies, on les
+	 * aplatit ici, à l'indexation. Contrepartie assumée : déplacer un nœud de hiérarchie exige
+	 * la réindexation des fiches liées — contrainte que CollectiveAccess a déjà pour sa
+	 * recherche hiérarchique, via la file d'indexation.
+	 *
+	 * @return array [attribut => [row_ids]] — vide si la table ne se facette pas.
+	 */
+	public function facetFragment(int $content_tablenum, int $content_row_id, int $subject_tablenum, ?array $options = null): array {
+		if ($content_row_id <= 0 || $content_tablenum === $subject_tablenum) { return []; }
+
+		$table = \Datamodel::getTableName($content_tablenum);
+		if (!$table || !in_array($table, Schema::FACET_TABLES, true)) { return []; }
+
+		$ids = array_merge([$content_row_id], $this->hierarchyAncestors($table, $content_row_id));
+
+		$fragment = [$this->schema->facetAttribute($table) => $ids];
+
+		// Pour une table hiérarchique, le lien direct est aussi rangé à part : le Browse ne
+		// traite pas de la même façon un enregistrement lié et un nœud présent par simple
+		// ascendance (un ancêtre sans type ni accès est écarté, un lien direct est conservé).
+		$hierarchical = !empty(self::$is_hierarchical[$table]);
+		if ($hierarchical) {
+			$fragment[$this->schema->directFacetAttribute($table)] = [$content_row_id];
+		}
+
+		if ($rel_type_id = ($options['relationship_type_id'] ?? null)) {
+			if (function_exists('caGetRelationshipTypeCode') && ($code = caGetRelationshipTypeCode($rel_type_id))) {
+				$fragment[$this->schema->facetAttribute($table, $code)] = $ids;
+				if ($hierarchical) {
+					$fragment[$this->schema->directFacetAttribute($table, $code)] = [$content_row_id];
+				}
+			}
+		}
+
+		return $fragment;
+	}
+
+	/**
+	 * Ancêtres hiérarchiques d'un enregistrement, racine technique exclue — la racine d'une
+	 * liste ou d'une hiérarchie de lieux est un nœud de service, pas une valeur de facette.
+	 *
+	 * Le cache est la condition du coût nul : 300 000 objets se rattachent à quelques milliers
+	 * de lieux ou de termes, chaque chaîne d'ancêtres n'est résolue qu'une fois par processus.
+	 */
+	private function hierarchyAncestors(string $table, int $row_id): array {
+		if (isset(self::$ancestor_cache[$table][$row_id])) { return self::$ancestor_cache[$table][$row_id]; }
+
+		if (!isset(self::$is_hierarchical[$table])) {
+			$t = \Datamodel::getInstanceByTableName($table, true);
+			self::$is_hierarchical[$table] = ($t && $t->isHierarchical());
+		}
+		if (!self::$is_hierarchical[$table]) { return self::$ancestor_cache[$table][$row_id] = []; }
+
+		$ancestors = [];
+		try {
+			$t = \Datamodel::getInstanceByTableName($table, true);
+			$ids = $t->getHierarchyAncestors($row_id, ['idsOnly' => true, 'includeSelf' => false]);
+			$ids = is_array($ids) ? array_values(array_unique(array_map('intval', $ids))) : [];
+
+			// La chaîne remonte jusqu'à la racine technique — le nœud de service d'une liste
+			// ou d'une hiérarchie de lieux, que le Browse écarte aussi. Elle se reconnaît à
+			// son absence de parent, relue en base : le relevé d'ancêtres ne la donne pas.
+			if (sizeof($ids)) {
+				$qr = $this->db()->query(
+					'SELECT ' . $t->primaryKey() . ' FROM ' . $table . ' WHERE ' . $t->primaryKey() . ' IN (?) AND parent_id IS NOT NULL',
+					[$ids]
+				);
+				$ancestors = array_map('intval', $qr->getAllFieldValues($t->primaryKey()));
+			}
+		} catch (\Exception $e) {
+			// Un arbre incohérent ne doit pas faire échouer l'indexation : la facette perd ses
+			// ancêtres pour cette valeur, c'est tout.
+			Log::warn("Ancêtres de {$table}#{$row_id} introuvables : " . $e->getMessage());
+		}
+
+		return self::$ancestor_cache[$table][$row_id] = $ancestors;
+	}
+
+	# -------------------------------------------------------
 
 	/**
 	 * @return array|null [nom de table, nom de champ, nature ('intrinsic'|'attribute'|'count')]

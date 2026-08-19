@@ -250,6 +250,27 @@ connecteur de le défaire.
 Le texte libre, lui, garde la complétion et la tolérance aux fautes : c'est ce qu'on vient
 chercher chez Meilisearch, et c'est un écart assumé par rapport à `SqlSearch2`.
 
+**Les facettes du Browse sont calculées par le moteur** quand elles se traduisent exactement,
+en SQL sinon — facette par facette, sans réglage à connaître. À l'indexation, chaque document
+porte les identifiants de ses enregistrements liés (`facet__ca_entities`, plus une variante par
+type de relation), **ancêtres hiérarchiques compris** : un objet lié à « Addis-Abeba » compte
+pour « Abyssinie », et poser le critère sur l'ancêtre restreint comme sa descendance — la
+sémantique exacte de l'expansion hiérarchique du socle. Le pont (`Facets.php`) traduit l'état du
+browse (critères, restrictions d'accès, de type, de source) en un `filter` Meilisearch et lit
+les comptes dans `facetDistribution` ; il rend le format que le socle attend, libellés relus en
+SQL. Sa règle unique : **traduire exactement ou décliner** — `relative_to`, ACL par
+enregistrement, expression `_search` à syntaxe Lucene, types de facette non couverts
+(`normalizedDates`, `location`, `checkouts`…) rendent la main au SQL du socle, à l'identique.
+Couvert aujourd'hui : `fieldList`, `has`, `authority`. Nécessite le patch du socle (délégation
+dans `BrowseEngine::getFacetContent()`, ~36 lignes, identique dans Providence et Pawtucket2) et
+une réindexation ; sans eux, tout décline tout seul. `tests/browse-facettes.php` prouve
+l'équivalence contre l'instance — même contenu, mêmes comptes — avec un seul écart assumé : le
+compte d'un ancêtre est chez nous le nombre de documents distincts de sa branche, là où le SQL
+additionne les descendants (un objet lié à deux descendants y compte deux fois). Mesuré à
+71 277 fiches : `type_facet` passe de 211 à 2,8 ms à vide, et de 233 à 1,3 ms sous un critère à
+70 964 résultats — le SQL y injecte la liste littérale des identifiants dans un `IN (…)`, le
+moteur n'en a pas besoin.
+
 **En cas de panne, deux comportements opposés, et c'est voulu :**
 
 - à la **recherche**, le connecteur journalise et rend zéro résultat — l'application reste

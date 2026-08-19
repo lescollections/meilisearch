@@ -42,6 +42,7 @@ class Config {
 		'indexing_buffer_size'  => 500,
 		'search_limit'          => 2000000,
 		'debug'                 => 0,
+		'browse_facets'         => 1,
 	];
 
 	private static $constants = [
@@ -77,6 +78,7 @@ class Config {
 	public function indexingBufferSize(): int { return max(1, (int)$this->get('indexing_buffer_size')); }
 	public function searchLimit(): int     { return max(1, (int)$this->get('search_limit')); }
 	public function debug(): bool          { return (bool)(int)$this->get('debug'); }
+	public function browseFacets(): bool   { return (bool)(int)$this->get('browse_facets'); }
 
 	/**
 	 * Le greffon applicatif est-il installé ? Le connecteur seul ne suffit pas : les deux

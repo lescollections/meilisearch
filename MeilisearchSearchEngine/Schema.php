@@ -28,6 +28,42 @@ class Schema {
 	/** Champ technique : nom de la table sujet, pratique au diagnostic. */
 	const TABLE = 'ca_table';
 
+	/**
+	 * Préfixe des attributs de facette : identifiants des enregistrements liés, rangés par
+	 * table (`facet__ca_entities`) et, quand le lien est typé, par type de relation
+	 * (`facet__ca_entities__artist`). Ce sont ces attributs que le Browse filtre et compte —
+	 * les attributs texte servent à chercher, ceux-ci servent à naviguer.
+	 */
+	const FACET = 'facet__';
+
+	/**
+	 * Préfixe des attributs de facette *directs* : les seuls enregistrements effectivement
+	 * liés, sans leurs ancêtres. N'existe que pour les tables hiérarchiques, où le Browse
+	 * traite différemment un lien direct et un nœud présent par simple ascendance — un
+	 * ancêtre sans type ni accès est écarté, un lien direct est conservé. Préfixe distinct
+	 * de FACET : un type de relation nommé « direct » ne doit pas entrer en collision.
+	 */
+	const FACET_DIRECT = 'facet_direct__';
+
+	/**
+	 * Tables primaires dont les enregistrements liés sont rangés en facettes. La liste est
+	 * fermée : tout ce qui n'y figure pas (tables de labels, de relations…) passe par
+	 * l'indexation texte ordinaire.
+	 */
+	const FACET_TABLES = [
+		'ca_objects', 'ca_object_lots', 'ca_entities', 'ca_places', 'ca_occurrences',
+		'ca_collections', 'ca_storage_locations', 'ca_loans', 'ca_movements',
+		'ca_list_items', 'ca_object_representations',
+	];
+
+	/**
+	 * Intrinsèques de la table sujet dont le Browse a besoin comme filtres transversaux
+	 * (accès, type, source, aliénation). Rendus filtrables d'office : un filtre de facette
+	 * dont le champ n'est pas filtrable échoue, et un browse aux comptes faux est pire
+	 * qu'un browse lent.
+	 */
+	const FILTER_FIELDS = ['access', 'type_id', 'source_id', 'is_deaccessioned', 'deleted', 'parent_id'];
+
 	/** @var string préfixe des noms d'index */
 	private $prefix;
 
@@ -64,6 +100,46 @@ class Schema {
 	}
 
 	/**
+	 * Attribut de facette d'une table liée, éventuellement restreint à un type de relation.
+	 */
+	public function facetAttribute(string $table, ?string $rel_type_code = null): string {
+		$attribute = self::FACET . $this->sanitize($table);
+		if ($rel_type_code !== null && strlen($rel_type_code)) {
+			$attribute .= '__' . $this->sanitize($rel_type_code);
+		}
+		return $attribute;
+	}
+
+	/**
+	 * Attribut des liens directs d'une table hiérarchique — mêmes règles de nommage.
+	 */
+	public function directFacetAttribute(string $table, ?string $rel_type_code = null): string {
+		$attribute = self::FACET_DIRECT . $this->sanitize($table);
+		if ($rel_type_code !== null && strlen($rel_type_code)) {
+			$attribute .= '__' . $this->sanitize($rel_type_code);
+		}
+		return $attribute;
+	}
+
+	/**
+	 * Attributs filtrables connus d'avance pour un index : les facettes de chaque table
+	 * primaire et les intrinsèques transversaux de la table sujet. Les variantes par type de
+	 * relation, imprévisibles, sont ajoutées au fil des versements (voir le connecteur) —
+	 * Meilisearch 1.13 ne connaît pas encore les motifs `facet__*`.
+	 */
+	public function baseFilterableAttributes(string $subject_table): array {
+		$attributes = [self::PK, self::TABLE];
+		foreach (self::FACET_TABLES as $table) {
+			$attributes[] = $this->facetAttribute($table);
+			$attributes[] = $this->directFacetAttribute($table);
+		}
+		foreach (self::FILTER_FIELDS as $field) {
+			$attributes[] = $this->fieldName($subject_table, $field);
+		}
+		return $attributes;
+	}
+
+	/**
 	 * Réglages appliqués à chaque index.
 	 *
 	 * `pagination.maxTotalHits` est le réglage à ne pas oublier : Meilisearch plafonne à
@@ -76,6 +152,13 @@ class Schema {
 			'pagination'          => ['maxTotalHits' => 2000000],
 			'filterableAttributes' => array_values(array_unique(array_merge([self::PK, self::TABLE], $filterable_attributes))),
 			'displayedAttributes' => [self::PK],
+			// Les facettes du Browse sont exhaustives : un spécialiste veut la liste entière,
+			// pas les cent valeurs les plus fréquentes. Mesuré à 71 000 fiches : 42 ms pour
+			// rendre 50 000 valeurs distinctes — le plafond haut ne coûte que si on s'en sert.
+			'faceting'            => [
+				'maxValuesPerFacet' => 500000,
+				'sortFacetValuesBy' => ['*' => 'count'],
+			],
 			// La recherche par identifiant d'inventaire est un cas majeur : on ne veut pas que
 			// « CLE.1234 » soit rapproché de « CLE.1235 » par tolérance orthographique.
 			'typoTolerance'       => [
