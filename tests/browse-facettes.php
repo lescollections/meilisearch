@@ -243,6 +243,107 @@ function fabriquer_matiere_authority($plugin): array {
 
 $matiere = fabriquer_matiere_authority($plugin);
 
+/**
+ * Matière pour les facettes de dates : l'élément `creation_date` que le browse.conf livré
+ * désigne n'existe dans aucun de nos corpus. On le crée, et on pose des dates dont les
+ * tranches sont connues d'avance — dont un intervalle à cheval sur deux décennies, qui est
+ * le cas que l'éclatement doit couvrir.
+ */
+function fabriquer_matiere_dates($plugin): array {
+	$db = new Db();
+
+    // Dix objets, distincts de ceux qui portent la matière d'autorité, pour que les comptes
+    // de chaque facette restent lisibles.
+	$qr = $db->query("SELECT object_id FROM ca_objects WHERE deleted = 0 ORDER BY object_id DESC LIMIT 6");
+	$objets = array_map('intval', $qr->getAllFieldValues('object_id'));
+	est_vrai(sizeof($objets) === 6, 'moins de six objets dans le fonds');
+
+	$element_id = (int)($db->query("SELECT element_id FROM ca_metadata_elements WHERE element_code = 'creation_date'")->getAllFieldValues('element_id')[0] ?? 0);
+	if (!$element_id) {
+		$t = new ca_metadata_elements();
+		$t->set('element_code', 'creation_date');
+		$t->set('datatype', __CA_ATTRIBUTE_VALUE_DATERANGE__);
+		$t->set('parent_id', null);
+		$t->insert();
+		est_vrai(!$t->numErrors(), 'création de l\'élément creation_date : ' . join('; ', $t->getErrors()));
+		$element_id = (int)$t->getPrimaryKey();
+
+		// L'étiquette n'est pas décorative : getApplicableElementCodes() joint les libellés en
+		// INNER JOIN (BaseModelWithAttributes.php:3676). Un élément sans libellé n'est
+		// applicable à rien, ses valeurs ne s'indexent pas, et rien ne le dit.
+		$t->addLabel(['name' => 'Date de création (test)'], ca_locales::getDefaultCataloguingLocaleID(), null, true);
+		est_vrai(!$t->numErrors(), 'étiquette de creation_date : ' . join('; ', $t->getErrors()));
+
+		$n = (int)($db->query("SELECT COUNT(*) c FROM ca_metadata_element_labels WHERE element_id = ?", [$element_id])->getAllFieldValues('c')[0] ?? 0);
+		est_vrai($n > 0, 'l\'élément creation_date est resté sans étiquette');
+
+		// Sans restriction de type, l'élément ne se pose sur aucune fiche — et l'échec est
+		// silencieux : addAttribute() n'élève rien, la valeur ne s'écrit simplement pas.
+		$t_restriction = new ca_metadata_type_restrictions();
+		$t_restriction->set('table_num', Datamodel::getTableNum('ca_objects'));
+		$t_restriction->set('type_id', null);          // null : tous les types
+		$t_restriction->set('include_subtypes', 1);
+		$t_restriction->set('element_id', $element_id);
+		$t_restriction->set('rank', 1);
+		$t_restriction->insert();
+		est_vrai(!$t_restriction->numErrors(), 'restriction de type : ' . join('; ', $t_restriction->getErrors()));
+
+		// Les codes applicables sont mis en cache par le socle : sans purge, l'élément qu'on
+		// vient de créer reste invisible pour le reste du processus.
+		if (method_exists('ca_metadata_elements', 'flushCache')) { ca_metadata_elements::flushCache(); }
+		if (class_exists('ExternalCache')) { ExternalCache::flush('ElementList'); ExternalCache::flush('ElementSets'); }
+	}
+
+	// Les dates, et les tranches qu'on en attend.
+	$dates = ['1946', '1946', '1947', '1950', '1955', '1948 - 1952'];
+	$deja  = (int)($db->query("SELECT COUNT(*) c FROM ca_attributes WHERE element_id = ?", [$element_id])->getAllFieldValues('c')[0] ?? 0);
+
+	if (!$deja) {
+		ca_metadata_elements::getElementID('creation_date');   // amorce les caches du socle
+		foreach ($objets as $i => $oid) {
+			$t = new ca_objects($oid);
+			$t->addAttribute(['creation_date' => $dates[$i]], 'creation_date');
+			$t->update();
+			est_vrai(!$t->numErrors(), "date sur l'objet {$oid} : " . join('; ', $t->getErrors()));
+		}
+
+		require_once(__CA_APP_DIR__ . '/plugins/Meilisearch/tools/_socle.php');
+		$indexeur   = new SearchIndexer($db);
+		$table_num  = Datamodel::getTableNum('ca_objects');
+		$field_data = donnees_de_champs($indexeur, 'ca_objects', $objets, $db);
+		foreach ($objets as $oid) { $indexeur->indexRow($table_num, $oid, $field_data[$oid] ?? [], true); }
+		$plugin->flushContentBuffer();
+	}
+
+	return ['objets' => $objets, 'element_id' => $element_id];
+}
+
+$dates = fabriquer_matiere_dates($plugin);
+
+verifier('year_facet éclate les intervalles en années, aux mêmes comptes que le SQL', function () use ($plugin) {
+	memes_facettes(facette_sql('year_facet'), facette_moteur($plugin, 'year_facet'), 'year_facet');
+});
+
+verifier('decade_facet regroupe par décennie, aux mêmes comptes que le SQL', function () use ($plugin) {
+	memes_facettes(facette_sql('decade_facet'), facette_moteur($plugin, 'decade_facet'), 'decade_facet');
+});
+
+verifier('un intervalle compte dans chacune des années qu\'il recouvre', function () use ($plugin) {
+	$m = comptes(facette_moteur($plugin, 'year_facet'));
+	// 1946 est posée deux fois ; 1948-1952 recouvre 1948 à 1952, dont 1950 déjà posée seule.
+	est_egal(2, $m['1946'] ?? -1, 'deux fiches en 1946');
+	est_egal(1, $m['1947'] ?? -1, 'une fiche en 1947');
+	est_egal(1, $m['1949'] ?? -1, '1949 vient du seul intervalle');
+	est_egal(2, $m['1950'] ?? -1, '1950 : la date seule et l\'intervalle');
+	est_egal(1, $m['1955'] ?? -1, 'une fiche en 1955');
+});
+
+verifier('un critère de date restreint comme le recouvrement du socle', function () use ($plugin) {
+	$criteres = ['year_facet' => ['1950']];
+	memes_facettes(facette_sql('type_facet', $criteres), facette_moteur($plugin, 'type_facet', $criteres),
+		'type_facet sous l\'année 1950');
+});
+
 # ----------------------------------------------------------------------
 # Matière : un type, une entité, tirés du fonds
 # ----------------------------------------------------------------------
@@ -398,7 +499,7 @@ verifier('une facette has déjà en critère disparaît, des deux côtés', func
 # ----------------------------------------------------------------------
 
 verifier('les facettes non traduites déclinent proprement', function () use ($plugin) {
-	foreach (['year_facet', 'transcribable_facet', 'title_facet', 'violation_facet'] as $facette) {
+	foreach (['transcribable_facet', 'title_facet', 'violation_facet', 'checkouts_facet'] as $facette) {
 		$b = caGetBrowseInstance('ca_objects');
 		$info = $b->getInfoForFacet($facette);
 		if (!is_array($info)) { continue; }

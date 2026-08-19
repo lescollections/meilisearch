@@ -370,7 +370,13 @@ class Client {
 		if ($body !== null) {
 			// JSON_PRESERVE_ZERO_FRACTION : sans lui, un 1.0 part en `1` et Meilisearch fige
 			// le type du champ sur un entier, ce qui casse les filtres de plage ultérieurs.
-			$payload = json_encode($body, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRESERVE_ZERO_FRACTION);
+			// JSON_INVALID_UTF8_SUBSTITUTE : une seule valeur mal encodée dans le fonds faisait
+			// échouer json_encode(), donc tout le lot, donc l'ouvrier — 1 500 entités sur 8 719
+			// manquaient à l'index sur l'instance INRAP. Le socle assemble ces documents à partir
+			// de champs qui ne sont pas garantis en UTF-8 valide ; plutôt que de perdre le lot, on
+			// remplace les séquences fautives par U+FFFD. Le champ reste cherchable, seule la
+			// séquence illisible est neutralisée.
+			$payload = json_encode($body, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRESERVE_ZERO_FRACTION | JSON_INVALID_UTF8_SUBSTITUTE);
 			if ($payload === false) {
 				throw new ClientException('Corps de requête non encodable en JSON : ' . json_last_error_msg());
 			}

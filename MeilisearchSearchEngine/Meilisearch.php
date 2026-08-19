@@ -105,6 +105,32 @@ class WLPlugSearchEngineMeilisearch extends BaseSearchPlugin implements IWLPlugS
 	}
 
 	# -------------------------------------------------------
+	/**
+	 * Tokenisation du connecteur.
+	 *
+	 * Elle délègue à celle de SqlSearch2 — la symétrie entre ce qui est indexé et ce qui est
+	 * cherché doit rester celle du socle — après avoir purgé l'encodage du texte reçu.
+	 *
+	 * Sans cette purge, `preg_replace('![\']+!u', …)` de SqlSearch2::tokenize() rend `null`, et non
+	 * une chaîne, dès qu'il bute sur une séquence UTF-8 mal formée. Ce `null` part ensuite dans
+	 * `caIdentifyAlphabet(string $text)`, dont le paramètre n'est pas nullable : TypeError fatale en
+	 * PHP 8, au milieu d'une réindexation, sur une seule valeur mal encodée. Constaté sur le fonds
+	 * INRAP, où une réindexation est tombée après 84 minutes.
+	 *
+	 * Note : ce point d'entrée n'est atteint que si `caTokenizeString()` interroge réellement la
+	 * classe du moteur. Le socle non corrigé teste `method_exists('SearchBase', <nom de classe>)`,
+	 * toujours faux, et retombe donc inconditionnellement sur SqlSearch2.
+	 */
+	static public function tokenize(?string $content, ?bool $for_search=false, ?int $index=0) : array {
+		$content = (string)$content;
+		if(!mb_check_encoding($content, 'UTF-8')) {
+			$content = mb_convert_encoding($content, 'UTF-8', 'UTF-8');
+		}
+		require_once(__CA_LIB_DIR__.'/Plugins/SearchEngine/SqlSearch2.php');
+		return WLPlugSearchEngineSqlSearch2::tokenize($content, $for_search, $index);
+	}
+
+	# -------------------------------------------------------
 	public function __construct($db = null) {
 		$this->ms_config = new Meilisearch\Config();
 
@@ -949,7 +975,8 @@ class WLPlugSearchEngineMeilisearch extends BaseSearchPlugin implements IWLPlugS
 			foreach ($document as $attribute => $v) {
 				if (isset(self::$filterable_attributes[$index][$attribute])) { continue; }
 				if (strpos($attribute, Meilisearch\Schema::FACET) === 0
-					|| strpos($attribute, Meilisearch\Schema::FACET_DIRECT) === 0) {
+					|| strpos($attribute, Meilisearch\Schema::FACET_DIRECT) === 0
+					|| strpos($attribute, Meilisearch\Schema::FACET_DATE) === 0) {
 					$new[$attribute] = true;
 				}
 			}

@@ -16,7 +16,24 @@
 
 if (php_sapi_name() !== 'cli') { die("À lancer en ligne de commande.\n"); }
 
-require_once('/var/www/html/setup.php');
+// Remontée depuis le répertoire courant à la recherche de la racine de Providence, sur le modèle
+// de MeilisearchAppPlugin/tools/. L'ancien `require_once('/var/www/html/setup.php')` était hérité
+// du harnais Docker : sur toute instance dont la racine n'est pas /var/www/html — c'est le cas de
+// comodo2026-preprod — aucun test ne démarrait. CA_RACINE permet de forcer le chemin.
+$racine = getenv('CA_RACINE') ?: null;
+if (!$racine) {
+	$candidat = getcwd();
+	for ($i = 0; $i < 6 && $candidat && $candidat !== '/'; $i++) {
+		if (file_exists($candidat . '/setup.php') && is_dir($candidat . '/app/lib')) { $racine = $candidat; break; }
+		$candidat = dirname($candidat);
+	}
+}
+if (!$racine || !file_exists($racine . '/setup.php')) {
+	fwrite(STDERR, "Racine de Providence introuvable ; se placer dedans ou poser CA_RACINE.\n");
+	exit(2);
+}
+
+require_once($racine . '/setup.php');
 require_once(__CA_LIB_DIR__ . '/Datamodel.php');
 require_once(__CA_LIB_DIR__ . '/Search/SearchBase.php');
 require_once(__CA_LIB_DIR__ . '/Search/ObjectSearch.php');

@@ -96,8 +96,17 @@ class Facets {
 
 		$type = $facet_info['type'] ?? null;
 		if ($type === null)  { return $this->decliner('facette virtuelle, sans contenu'); }
-		if (!in_array($type, ['fieldList', 'has', 'authority', 'field'], true)) {
+		if (!in_array($type, ['fieldList', 'has', 'authority', 'field', 'normalizedDates'], true)) {
 			return $this->decliner("type « {$type} » non traduit");
+		}
+		if ($type === 'normalizedDates') {
+			// Ces options changent la nature du calcul — envelope imposée, poste « date
+			// inconnue », dates ouvertes traitées comme approximatives. Le SQL les fait ; nous
+			// n'indexons pas de quoi les refaire.
+			foreach (['include_unknown', 'minimum_date', 'maximum_date',
+				'treat_before_dates_as_circa', 'treat_after_dates_as_circa'] as $key) {
+				if (!empty($facet_info[$key])) { return $this->decliner("option « {$key} » non traduite"); }
+			}
 		}
 		// Un gabarit compose le libellé à partir d'une table liée en un-vers-plusieurs : c'est
 		// une jointure, pas une distribution.
@@ -142,6 +151,8 @@ class Facets {
 					return $this->fieldListFacet($browse, $index, $t_subject, $facet_name, $facet_info, $options, $q, $filter_clauses);
 				case 'field':
 					return $this->fieldFacet($browse, $index, $t_subject, $facet_name, $facet_info, $options, $q, $filter_clauses);
+				case 'normalizedDates':
+					return $this->datesFacet($browse, $index, $t_subject, $facet_name, $facet_info, $options, $q, $filter_clauses);
 				case 'has':
 					return $this->hasFacet($browse, $index, $t_subject, $facet_name, $facet_info, $options, $q, $filter_clauses);
 				case 'authority':
@@ -205,6 +216,9 @@ class Facets {
 					break;
 				case 'field':
 					$clause = $this->fieldCriterion($subject_table, $t_subject, $info, $values, $fields);
+					break;
+				case 'normalizedDates':
+					$clause = $this->datesCriterion($info, $values, $fields);
 					break;
 				case 'has':
 					$clause = $this->hasCriterion($subject_table, $info, $values, $fields);
@@ -338,6 +352,38 @@ class Facets {
 			} else {
 				$per_value[] = $attr . ' IN ' . $this->inList([$value]);
 			}
+		}
+
+		if (!empty($info['multiple'])) { return '(' . join(' OR ', $per_value) . ')'; }
+		return '(' . join(' AND ', $per_value) . ')';
+	}
+
+	/**
+	 * Critère normalizedDates : égalité sur la tranche.
+	 *
+	 * Le socle applique ce critère en recouvrement d'intervalles ; l'attribut portant toutes
+	 * les tranches qu'une fiche recouvre, l'égalité sélectionne exactement les mêmes fiches.
+	 * Une tranche que l'usager aurait tapée à la main plutôt que choisie dans la facette ne
+	 * s'y trouverait pas : on ne traduit donc que les valeurs présentes dans l'index, et on
+	 * décline sinon — c'est le seul cas où l'égalité et le recouvrement divergeraient.
+	 */
+	private function datesCriterion(array $info, array $values, array $fields): ?string {
+		$parts = explode('.', (string)($info['element_code'] ?? ''));
+		$code  = (string)array_pop($parts);
+		$normalisation = (string)($info['normalization'] ?? '');
+		if (!strlen($code) || !strlen($normalisation) || sizeof($parts) > 1) { return null; }
+
+		foreach (['include_unknown', 'minimum_date', 'maximum_date',
+			'treat_before_dates_as_circa', 'treat_after_dates_as_circa'] as $key) {
+			if (!empty($info[$key])) { return null; }
+		}
+
+		$attr = $this->schema->dateFacetAttribute($code, $normalisation);
+		if (!in_array($attr, $fields, true)) { return null; }
+
+		$per_value = [];
+		foreach ($values as $value) {
+			$per_value[] = $attr . ' IN ' . $this->inList([(string)$value]);
 		}
 
 		if (!empty($info['multiple'])) { return '(' . join(' OR ', $per_value) . ')'; }
@@ -529,6 +575,69 @@ class Facets {
 			$id = str_replace('/', '&#47;', $valeur);
 			$valeurs[$valeur] = ['id' => $id, 'label' => $valeur, 'content_count' => (int)$compte];
 		}
+		return $valeurs;
+	}
+
+	/**
+	 * Facette normalizedDates : la distribution des tranches posées à l'indexation.
+	 *
+	 * Tout le travail a été fait en amont — chaque document porte les années (ou décennies, ou
+	 * siècles) que ses dates recouvrent. Ne reste qu'à ordonner : les tranches sont des
+	 * expressions (« 1946 », « 1940s »), pas des nombres, et l'ordre alphabétique y serait
+	 * faux. On les fait dater par l'analyseur, comme le socle ordonne par sa clé de tri.
+	 */
+	private function datesFacet($browse, string $index, $t_subject, string $facet_name, array $facet_info, array $options, string $q, array $clauses) {
+		$parts = explode('.', (string)($facet_info['element_code'] ?? ''));
+		$code  = (string)array_pop($parts);
+		$normalisation = (string)($facet_info['normalization'] ?? '');
+		if (!strlen($code) || !strlen($normalisation)) { return $this->decliner('facette de dates incomplète'); }
+		if (sizeof($parts) > 1) { return $this->decliner('élément de date dans un conteneur'); }
+
+		$attr = $this->schema->dateFacetAttribute($code, $normalisation);
+		if (!$this->engine->isFilterable($index, $attr)) {
+			return $this->decliner("« {$attr} » non déclaré filtrable — réindexer");
+		}
+
+		$distribution = $this->distribution($index, $attr, $q, $clauses);
+
+		if (!empty($options['checkAvailabilityOnly'])) { return sizeof($distribution) > 0; }
+		if (!sizeof($distribution)) { return []; }
+
+		$criteria = $browse->getCriteria($facet_name);
+		if (!is_array($criteria)) { $criteria = []; }
+
+		if (!class_exists('\TimeExpressionParser')) { return $this->decliner('analyseur de dates indisponible'); }
+		$tep = new \TimeExpressionParser();
+
+		$valeurs = [];
+		foreach ($distribution as $tranche => $compte) {
+			$tranche = (string)$tranche;
+			if (isset($criteria[$tranche])) { continue; }
+
+			$debut = $fin = null;
+			if ($tep->parse($tranche)) {
+				$bornes = $tep->getHistoricTimestamps();
+				$debut  = (int)($bornes['start'] ?? 0);
+				$fin    = (int)($bornes['end'] ?? 0);
+			}
+
+			$valeurs[$tranche] = [
+				'id'            => $tranche,
+				'label'         => $tranche,
+				'start'         => $debut,
+				'end'           => $fin,
+				'content_count' => (int)$compte,
+				'_tri'          => $debut,
+			];
+		}
+
+		$decroissant = (strtoupper((string)($facet_info['sort'] ?? '')) === 'DESC');
+		uasort($valeurs, function ($a, $b) use ($decroissant) {
+			$c = $a['_tri'] <=> $b['_tri'];
+			return $decroissant ? -$c : $c;
+		});
+		foreach ($valeurs as $k => $v) { unset($valeurs[$k]['_tri']); }
+
 		return $valeurs;
 	}
 

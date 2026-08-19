@@ -48,6 +48,95 @@ Le corpus CMA arrive en `access = 1` et sans images (`CA_SEED_CMA_MEDIA=1` pour 
 L'indexation de recherche est coupée pendant le chargement, pour que la réindexation se mesure
 comme une opération à part.
 
+## Point d'étape — 19 août 2026, instance INRAP comodo2026-preprod
+
+Première mise à l'échelle réelle : **661 025 documents**, dont 253 392 objets, sur un socle
+**`collectiveaccess/providence` non forké** (branche `dev/php8`, schéma 191, PHP 8.4.24). Base
+MariaDB **distante**. `verifier-socle.php` : 12 conformes, 1 à savoir, 0 bloquant — seul
+`getFieldDataForReindex` manque ; `clearCaches` et `flushContentBuffer`, que le brief redoutait,
+sont présents.
+
+**Réindexation complète : 4 h 14**, dont 3 h 40 pour les seuls objets (19 lignes/s), 13 min pour
+les 40 014 collections. Index de **2 619 Mo utilisés**, 4,4 Go de fichier — LMDB ne rend jamais
+les pages libérées. Durabilité vérifiée : 661 025 documents avant `systemctl restart`, autant
+après.
+
+**Le coût d'indexation suit le nombre de fiches, pas le volume de métadonnées.** Prédiction faite
+puis démentie : les collections portent 31,1 attributs par fiche contre 6,9 pour les objets, d'où
+une estimation de 2 h 30 — réel 13 min, soit 19 ms par fiche contre 52 ms pour un objet. Le poste
+dominant est l'aller-retour SQL par fiche, pas l'attribut.
+
+**Découpage dynamique.** Le découpage statique par modulo équilibrait le nombre de lignes, jamais
+leur coût : le débit tombait de 25,9 à 13,6 objets/s à mesure que les parts légères s'achevaient,
+la fin étant dictée par la part la plus lourde restée seule. Remplacé par une file où chaque
+ouvrier puise un lot (`--lot`, 100 par défaut) sous verrou de fichier. Gain mesuré sur les
+objets : **3 h 40 contre 4 h 31**, et la charge reste à 8,3 sur 8 cœurs au lieu de retomber à 5,8.
+
+**Diagnostic historique** — 100 expressions de moins de 180 jours, chacune rendant plus de 1 700
+résultats à l'époque, sélectionnées par `--historique=100 --jours=180 --tri=resultats` (options
+ajoutées ici : la sélection d'origine prenait les N *lignes* les plus récentes puis dédoublonnait).
+
+    3 identiques · 34 à 5 % près · 58 plus larges · 3 plus étroites · 2 vidées · 0 en erreur
+
+Le fonds n'a pas dérivé sur la fenêtre — `ceramique` 34 627 → 34 627, `palette` 16 297 → 16 297,
+`F010*` 2 175 → 2 175 — donc les écarts sont imputables au moteur, pas à la croissance de la base.
+
+Toute la divergence tient dans la **longueur du terme** :
+
+| Famille | n | à ±5 % | Écart médian |
+|---|---|---|---|
+| 1-2 caractères | 15 | 1/15 | **+172 %** |
+| 3 caractères | 41 | 18/41 | +6 % |
+| 4-5 caractères | 24 | 11/24 | +6 % |
+| 6 et plus | 7 | 3/7 | +12 % |
+| Champ qualifié | 13 | 4/13 | +23 % |
+
+`12` passe de 63 603 à 222 765, `M` de 8 036 à 242 217. Au-delà de quatre caractères les
+troncatures sont fidèles au chiffre près : `F12*` −2, `F010*` exact, `2214*` +15.
+
+**Deux régressions à traiter :**
+
+- `[BLANK]` et `[SET]` ne sont pas implémentés — `statut_collection:"[BLANK]"` rendait 244 572
+  fiches, rend 0 ;
+- la valeur d'un champ qualifié ne restreint pas — `(ca_objects.type_id:"mobilier")` rendait
+  20 373, rend 218 173.
+
+**Latence : Meilisearch est 1,89× plus lent que SqlSearch2** sur cette instance. Comparé à
+volume de résultats égal (34 expressions à ±5 %) contre les `execution_time` enregistrés dans
+`ca_search_log` : médiane **134 ms contre 236 ms**, coût pour mille résultats 21,7 ms contre
+34,8 ms, 7 requêtes sur 34 plus rapides seulement. Ce n'est pas le moteur — interrogé en direct il
+répond en 4 ms — c'est le chemin : SqlSearch2 garde ses identifiants dans la même base que les
+données, là où le connecteur les rapatrie par HTTP avant de les réinjecter en `WHERE … IN (…)`.
+Le §9.3 du brief le pressentait ; il se chiffre à un facteur 2.
+
+**Le 0 silencieux est le défaut le plus dangereux.** Service arrêté, délai dépassé
+(`meilisearch_timeout = 10`, atteint par `M 3*`) : dans les deux cas le connecteur rend zéro
+résultat sans lever. Une panne devient indiscernable d'un fonds vide. À faire lever.
+
+**Trois défauts corrigés pour que la réindexation aboutisse**, tous liés à de l'UTF-8 mal formé ou
+à un dispatch fautif du socle :
+
+1. `searchHelpers.php` — `caTokenizeString()` testait `method_exists('SearchBase', <nom de
+   classe>)`, faux par construction : le repli SqlSearch2 était pris pour **tous** les greffons. La
+   correction doit charger le fichier du greffon, qui n'est pas autochargeable, sans quoi elle ne
+   change rien. À remonter en amont, indépendamment de Meilisearch.
+   **Porté le 19/08 dans les deux branches `feature/meilisearch-browse-facets`** (providence et
+   pawtucket2) et vérifié sur le harnais : `caTokenizeString()` survit désormais à une séquence
+   UTF-8 mal formée, là où `WLPlugSearchEngineSqlSearch2::tokenize()` appelé directement lève
+   toujours `caIdentifyAlphabet(): Argument #1 ($text) must be of type string, null`. **Sur une
+   instance dont le socle n'est pas patché, le `tokenize()` du connecteur reste donc inerte et
+   la réindexation reste exposée** ;
+2. `Meilisearch.php` — `tokenize()` propre, qui purge l'encodage avant de déléguer au socle. Sans
+   lui, `preg_replace` en `/u` rend `null` sur une séquence mal formée et `caIdentifyAlphabet()`
+   lève une `TypeError` fatale au milieu de la réindexation ;
+3. `Client.php` — `JSON_INVALID_UTF8_SUBSTITUTE`. Une seule valeur mal encodée faisait échouer
+   `json_encode()`, donc tout le lot : **1 500 entités sur 8 719 manquaient**. 8 719 sur 8 719 après.
+
+**Piège à ne pas repayer** : une recherche lancée à la main sur l'instance est enregistrée dans
+`ca_search_log` en `PROVIDENCE`, sans la marque `meilisearch-diagnostic`, et devient de
+l'« historique client » pour les exécutions suivantes. Borner la référence à l'ère SqlSearch2, ou
+marquer aussi les sondages manuels.
+
 ## Point d'étape — 19 août 2026 : les facettes du Browse
 
 **Le Browse délègue ses facettes au moteur.** Deux moitiés : le connecteur indexe la matière et
