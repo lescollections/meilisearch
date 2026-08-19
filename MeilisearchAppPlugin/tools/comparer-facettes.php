@@ -108,6 +108,58 @@ function est_une_branche(?string $table, $id): bool {
 	return $cache[$cle] = (bool)$qr->nextRow();
 }
 
+/**
+ * Le SQL surcompte-t-il cette autorité ?
+ *
+ * Sa requête groupe par autorité *et* par type de relation, puis additionne les lignes
+ * (`BrowseEngine.php:7232`) : un enregistrement lié deux fois à la même autorité, par deux
+ * types de relation, y compte deux fois. Notre compte est celui des fiches — ce que le clic
+ * rend vraiment. On le reconnaît à l'existence d'un doublon dans la table de liens.
+ */
+function sql_surcompte(?string $rel_table, ?string $auth_table, ?string $subject_table, $id): bool {
+	static $cache = [];
+	if (!$rel_table || !$auth_table || !$subject_table || !is_numeric($id)) { return false; }
+
+	$cle = $rel_table . '/' . $id;
+	if (isset($cache[$cle])) { return $cache[$cle]; }
+
+	$t_auth    = Datamodel::getInstanceByTableName($auth_table, true);
+	$t_subject = Datamodel::getInstanceByTableName($subject_table, true);
+	if (!$t_auth || !$t_subject || !Datamodel::tableExists($rel_table)) { return $cache[$cle] = false; }
+
+	try {
+		$qr = (new Db())->query(
+			"SELECT 1 FROM {$rel_table} WHERE " . $t_auth->primaryKey() . " = ?
+			 GROUP BY " . $t_subject->primaryKey() . " HAVING COUNT(*) > 1 LIMIT 1",
+			[(int)$id]
+		);
+		return $cache[$cle] = (bool)$qr->nextRow();
+	} catch (Exception $e) {
+		return $cache[$cle] = false;
+	}
+}
+
+/**
+ * Cette valeur de liste est-elle celle d'un item supprimé ?
+ *
+ * L'indexeur du socle n'écrit rien pour un `type_id` dont l'item de liste est supprimé — il
+ * indexe les *libellés* de l'item, et un item supprimé n'en a plus — tandis que la facette SQL,
+ * qui lit la colonne directement, l'affiche encore. La valeur manque donc à l'index, et c'est
+ * le corollaire assumé de la délégation : ce que l'indexeur saute est invisible aux facettes.
+ */
+function item_de_liste_supprime($id): bool {
+	static $cache = [];
+	if (!is_numeric($id)) { return false; }
+	if (isset($cache[$id])) { return $cache[$id]; }
+
+	try {
+		$qr = (new Db())->query("SELECT deleted FROM ca_list_items WHERE item_id = ?", [(int)$id]);
+		return $cache[$id] = ($qr->nextRow() && (int)$qr->get('deleted') === 1);
+	} catch (Exception $e) {
+		return $cache[$id] = false;
+	}
+}
+
 /** Réduit un contenu de facette à [id => compte]. */
 $comptes = function ($contenu): array {
 	$out = [];
@@ -126,7 +178,7 @@ printf("\033[90mtable %s — moteur en service : %s%s\033[0m\n\n",
 
 $reference   = caGetBrowseInstance($table);
 $facettes    = $reference->getInfoForFacets();
-$bilan       = ['conforme' => 0, 'decline' => 0, 'divergent' => 0, 'raisons' => []];
+$bilan       = ['conforme' => 0, 'decline' => 0, 'divergent' => 0, 'assume' => 0, 'raisons' => [], 'details_assumes' => []];
 $divergences = [];
 
 /**
@@ -176,6 +228,18 @@ $comparer = function (string $facette, array $criteres, string $intitule)
 	$en_trop = array_diff(array_keys($c_ms), array_keys($c_sql));
 	$ecarts  = [];
 	$branches = 0;
+	$assumes  = [];
+
+	// Une valeur que l'index ne peut pas porter parce que son item de liste est supprimé :
+	// écart assumé, pas divergence — l'indexeur du socle n'écrit rien pour elle.
+	if (($info['type'] ?? null) === 'fieldList') {
+		foreach ($absents as $i => $id) {
+			if (item_de_liste_supprime($id)) {
+				$assumes[] = "{$id} : item de liste supprimé, jamais indexé";
+				unset($absents[$i]);
+			}
+		}
+	}
 
 	foreach ($c_sql as $id => $n) {
 		if (!isset($c_ms[$id]) || $c_ms[$id] === $n) { continue; }
@@ -184,15 +248,31 @@ $comparer = function (string $facette, array $criteres, string $intitule)
 		// dans la facette — un ancêtre dont les descendants comptés sont des petits-enfants
 		// n'a aucun enfant *dans la facette*, et passerait pour une feuille.
 		if (est_une_branche($info['table'] ?? null, $id)) { $branches++; continue; }
+
+		// Le SQL additionne une ligne par type de relation : un enregistrement lié deux fois
+		// à la même autorité y compte deux fois. Notre compte est celui des fiches.
+		if ($n > $c_ms[$id] && sql_surcompte($info['relationship_table'] ?? null, $info['table'] ?? null,
+				$reference->getSubjectInstance()->tableName(), $id)) {
+			$assumes[] = sprintf('%s : lié par plusieurs types de relation (SQL %d, fiches %d)', $id, $n, $c_ms[$id]);
+			continue;
+		}
+
 		$ecarts[] = sprintf('%s (SQL %d ≠ moteur %d)', $id, $n, $c_ms[$id]);
 	}
 
 	if (!sizeof($absents) && !sizeof($en_trop) && !sizeof($ecarts)) {
+		$notes = [];
+		if ($branches)        { $notes[] = sprintf('%d branche(s)', $branches); }
+		if (sizeof($assumes)) { $notes[] = sprintf('%d écart(s) assumé(s)', sizeof($assumes)); $bilan['assume'] += sizeof($assumes); }
+
 		$bilan['conforme']++;
 		printf("  \033[32m✓\033[0m %-46s %d poste(s)%s\n", $intitule, sizeof($c_ms),
-			$branches ? sprintf(" \033[90m(%d branche(s) tolérée(s))\033[0m", $branches) : '');
+			sizeof($notes) ? sprintf(" \033[90m(%s)\033[0m", join(', ', $notes)) : '');
+
+		foreach ($assumes as $a) { $bilan['details_assumes'][$a] = true; }
 		return;
 	}
+	if (sizeof($assumes)) { $bilan['assume'] += sizeof($assumes); foreach ($assumes as $a) { $bilan['details_assumes'][$a] = true; } }
 
 	$bilan['divergent']++;
 	$detail = [];
@@ -256,8 +336,19 @@ if (sizeof($bilan['raisons'])) {
 	}
 }
 
-printf("\n  \033[32m%d conforme(s)\033[0m, \033[90m%d au SQL\033[0m, %s\n\n",
-	$bilan['conforme'], $bilan['decline'],
+// Les écarts assumés : documentés, vérifiés, et où c'est le socle qui a tort. Les compter à
+// part évite qu'ils crient au loup à chaque exécution — et qu'on cesse de lire le bilan.
+if (sizeof($bilan['details_assumes'])) {
+	printf("\n\033[1mÉcarts assumés\033[0m \033[90m(le socle a tort, voir CLAUDE.md)\033[0m\n");
+	$details = array_keys($bilan['details_assumes']);
+	foreach (array_slice($details, 0, 10) as $d) { printf("  \033[90m·\033[0m %s\n", $d); }
+	if (sizeof($details) > 10) {
+		printf("  \033[90m·\033[0m … et %d autre(s)\n", sizeof($details) - 10);
+	}
+}
+
+printf("\n  \033[32m%d conforme(s)\033[0m, \033[90m%d au SQL\033[0m, \033[90m%d assumé(s)\033[0m, %s\n\n",
+	$bilan['conforme'], $bilan['decline'], $bilan['assume'],
 	$bilan['divergent']
 		? sprintf("\033[31m%d divergente(s)\033[0m", $bilan['divergent'])
 		: "\033[32m0 divergente\033[0m");
