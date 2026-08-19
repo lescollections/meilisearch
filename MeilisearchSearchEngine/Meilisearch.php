@@ -359,6 +359,33 @@ class WLPlugSearchEngineMeilisearch extends BaseSearchPlugin implements IWLPlugS
 	}
 	# -------------------------------------------------------
 	/**
+	 * Attributs déclarés filtrables sur l'index, relevés une fois par processus.
+	 *
+	 * Présent dans les documents et filtrable sont deux choses différentes, et les confondre
+	 * coûte cher : filtrer ou facetter sur un attribut non déclaré fait répondre HTTP 400
+	 * (`invalid_search_facets`) — un aller-retour perdu et une erreur au journal à chaque
+	 * affichage, pour une facette qui de toute façon repartira au SQL. Le pont s'en sert pour
+	 * décliner avant d'appeler.
+	 */
+	public function indexFilterableAttributes(string $index): array {
+		if (!isset(self::$filterable_attributes[$index])) {
+			try {
+				$settings = $this->getClient()->getSettings($index);
+				$attributs = is_array($settings['filterableAttributes'] ?? null) ? $settings['filterableAttributes'] : [];
+				self::$filterable_attributes[$index] = array_flip($attributs);
+			} catch (Meilisearch\ClientException $e) {
+				self::$filterable_attributes[$index] = [];
+			}
+		}
+		return array_keys(self::$filterable_attributes[$index]);
+	}
+	# -------------------------------------------------------
+	public function isFilterable(string $index, string $attribute): bool {
+		$this->indexFilterableAttributes($index);
+		return isset(self::$filterable_attributes[$index][$attribute]);
+	}
+	# -------------------------------------------------------
+	/**
 	 * Tous les identifiants de l'index : la recherche qui ne restreint rien, et le point de
 	 * départ d'une recherche qui n'est qu'une exclusion.
 	 */

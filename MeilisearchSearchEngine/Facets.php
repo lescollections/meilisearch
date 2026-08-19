@@ -134,7 +134,10 @@ class Facets {
 	private function translateBrowseState($browse, $t_subject, array $options): ?array {
 		$subject_table = $t_subject->tableName();
 		$index         = $this->schema->indexName($subject_table);
-		$fields        = $this->engine->indexFields($index);
+
+		// Ce qui compte pour un filtre, c'est d'être *déclaré filtrable*, pas d'être présent
+		// dans les documents : filtrer sur un attribut non déclaré fait répondre HTTP 400.
+		$fields = $this->engine->indexFilterableAttributes($index);
 
 		$q       = '';
 		$clauses = [];
@@ -168,7 +171,7 @@ class Facets {
 					$clause = $this->hasCriterion($subject_table, $info, $values, $fields);
 					break;
 				case 'authority':
-					$clause = $this->authorityCriterion($subject_table, $info, $values);
+					$clause = $this->authorityCriterion($subject_table, $info, $values, $fields);
 					break;
 				default:
 					return null;   // type de critère non traduit
@@ -274,6 +277,9 @@ class Facets {
 	private function hasCriterion(string $subject_table, array $info, array $values, array $fields): ?string {
 		$attrs = $this->hasAttributes($subject_table, $info);
 		if ($attrs === null) { return null; }
+		foreach ($attrs as $a) {
+			if (!in_array($a, $fields, true)) { return null; }
+		}
 
 		$per_value = [];
 		foreach ($values as $value) {
@@ -293,9 +299,10 @@ class Facets {
 	 * étant indexés, l'égalité sur un nœud couvre sa descendance — la sémantique exacte de
 	 * l'expansion hiérarchique d'execute().
 	 */
-	private function authorityCriterion(string $subject_table, array $info, array $values): ?string {
+	private function authorityCriterion(string $subject_table, array $info, array $values, array $fields): ?string {
 		$attr = $this->authorityAttribute($subject_table, $info);
 		if ($attr === null) { return null; }
+		if (!in_array($attr, $fields, true)) { return null; }
 
 		$ids = array_map('intval', $values);
 
@@ -328,8 +335,10 @@ class Facets {
 		$by_value = !isset($field_info['LIST_CODE']);
 
 		$attr = $this->schema->fieldName($subject_table, $field);
-		if (!in_array($attr, $this->engine->indexFields($index), true)) {
-			// Champ jamais indexé : impossible de compter juste.
+		if (!$this->engine->isFilterable($index, $attr)) {
+			// Champ non déclaré filtrable : le moteur refuserait la distribution (HTTP 400).
+			// C'est le cas courant d'un intrinsèque indexé comme texte et jamais facetté —
+			// `status`, par exemple. Au SQL, sans bruit.
 			return null;
 		}
 
@@ -386,6 +395,9 @@ class Facets {
 
 		$attrs = $this->hasAttributes($t_subject->tableName(), $facet_info);
 		if ($attrs === null) { return null; }
+		foreach ($attrs as $a) {
+			if (!$this->engine->isFilterable($index, $a)) { return null; }
+		}
 
 		$exists  = '(' . join(' OR ', array_map(function ($a) { return $a . ' EXISTS'; }, $attrs)) . ')';
 		$missing = '(' . join(' AND ', array_map(function ($a) { return $a . ' NOT EXISTS'; }, $attrs)) . ')';
@@ -426,8 +438,12 @@ class Facets {
 		$attr = $this->authorityAttribute($subject_table, $facet_info);
 		if ($attr === null) { return null; }
 
+		// Non déclaré filtrable : l'index date d'avant cette version du connecteur, ou la table
+		// n'est pas facettée. On décline plutôt que de se faire refuser la requête.
+		if (!$this->engine->isFilterable($index, $attr)) { return null; }
+
 		if (!in_array($attr, $this->engine->indexFields($index), true)) {
-			// Aucun document ne porte cette facette : contenu réellement vide.
+			// Déclaré, mais aucun document ne le porte : contenu réellement vide.
 			return !empty($options['checkAvailabilityOnly']) ? false : [];
 		}
 
