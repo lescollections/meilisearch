@@ -91,6 +91,67 @@ existent toutes comme commandes `caUtils` autonomes — les rejouer une à une, 
 `reindexer.php`, économise des heures. **49 min** ici : 11 de schéma, 6 d'attributs, 32 de
 valeurs de tri. `update-database-schema` demande une confirmation interactive (`yes y |`).
 
+### L'objectif : égaler SqlSearch2, pas le surpasser — décidé le 20 août 2026
+
+**Ce qu'on cherche, c'est le comportement de SqlSearch2 servi par Meilisearch.** Le gain visé est
+ailleurs : une empreinte mémoire de MariaDB plus légère, et la fin des effondrements sur les
+recherches à plusieurs mots. Un résultat que Meilisearch trouve et que SqlSearch2 ne trouve pas
+est donc **un écart à réduire**, pas une amélioration à défendre.
+
+L'exemple qui a fixé la règle : `roch` rend 5 294 fiches au moteur contre 966 à SqlSearch2, et
+l'analyse montrait que Meilisearch retrouvait en plus les objets dont le numéro composite porte
+le nom de l'église (`211467819_Saint-Roch[Ham-sur-Heure]_1`). C'est de la meilleure couverture —
+mais au CIPAR, le lien entre un objet et son édifice se pose par un critère d'emplacement ajouté
+dans l'interface, pas par la recherche plein texte. La bonne réponse n'est donc pas de s'en
+féliciter, mais de s'aligner.
+
+**Y compris quand SqlSearch2 a tort.** `parent_id:6` et `code_eglise:05R1000` y rendent zéro,
+faute de rattacher un champ tapé sans sa table ; `ca_objects.parent_id:6` rend 26. Rattacher
+automatiquement à la table sujet a été implémenté, mesuré juste — et **retiré**. La raison tient
+en une phrase : un remplacement dont on ne peut pas prédire les écarts n'inspire pas confiance,
+et sans confiance il ne se déploie pas là où les fonds sont gros. C'est bien une régression du
+socle entre 1.7 et 2.0 — l'historique du CIPAR montre 1 347 fiches pour `parent_id:220749036` —
+mais c'est au socle qu'il faut la porter, pas au connecteur de la masquer pour lui seul.
+
+### Ce que l'alignement a donné, mesuré sur le CIPAR
+
+Trois corrections, dans l'ordre où elles ont compté :
+
+1. **poser le `search.conf` du client** — sans quoi on compare à un SqlSearch2 qui n'est pas le
+   sien (voir le piège plus bas) ;
+2. **un terme sans astérisque se cherche exactement** (`Query::clause`, `exact => !$wildcard`).
+   Meilisearch complète sinon le dernier mot en préfixe, toujours : `roch` y rendait exactement
+   ce que rend `roch*`. Le même réglage annule sa tolérance orthographique, et c'est voulu —
+   SqlSearch2 n'en a pas. Le pont des facettes met de même chaque mot du critère `_search` entre
+   guillemets, sans quoi la facette compterait sur un autre ensemble que le browse n'affiche ;
+3. **ne plus rattacher un champ à sa table**, ci-dessus.
+
+| expression | Meilisearch | SqlSearch2 |
+|---|---|---|
+| `waremme`, `peinture murale` | identiques | identiques |
+| `burette` | 1 060 | 1 049 |
+| `parent_id:6`, `code_eglise:…` | 0 | 0 |
+| `roch` | 2 999 | 965 |
+
+**17 expressions réelles sur 40 sont à ±5 %**, et le diagnostic historique passe de 35 à 68 sur
+200. Ce qui reste tient surtout aux **valeurs composites** : SqlSearch2 garde
+`211467819_Saint-Roch[Ham-sur-Heure]_1` en un seul token, nous le découpons. La piste, non
+mesurée à ce jour, serait d'indexer les tokens de SqlSearch2 plutôt que le texte brut — au prix
+de la recherche de phrase et de la proximité.
+
+### Le gain, lui, est acquis : la queue de distribution
+
+| expression | Meilisearch | SqlSearch2 |
+|---|---|---|
+| `il y en a 2*` | 3,0 s | **100,3 s** |
+| `chaises 2*` | 2,5 s | **96,3 s** |
+| `cathédrale de Tournai` | 42 ms | 942 ms |
+| total, 40 expressions | **28,1 s** | **205,8 s** |
+
+Meilisearch reste **4× plus lent en médiane** sur les requêtes simples (30 ms contre 7) et
+**7× plus rapide au total**. C'est le compromis : vingt millisecondes de plus ne se perçoivent
+pas, cent secondes sont une recherche qui a échoué.
+
 ### La configuration cliente s'isole par base, sans toucher au socle
 
 `Configuration.php:153` cherche, en plus de `local/<fichier>.conf`, un
@@ -102,6 +163,26 @@ configuration du client ne s'applique qu'à lui. Vérifié : `technique_facet` n
 > **Comparer les facettes sans le `browse.conf` du client ne prouve rien** : on compare les
 > facettes du profil livré, pas celles que ses catalogueurs utilisent. Le CIPAR a trois facettes
 > `attribute` (`materiau`, `technique`, `objet_present`) que le profil par défaut n'a pas.
+>
+> **Et comparer les recherches sans son `search.conf` ne prouve pas davantage.** Piège payé le
+> 20 août : le harnais a `search_sql_search_do_stemming = 1`, le CIPAR `= 0`. Toutes les mesures
+> de fidélité d'avant opposaient donc Meilisearch à un SqlSearch2 **désuffixant**, que le client
+> n'utilise pas — d'où `burette` rendant 2 670 fiches chez lui contre 1 051 pour le mot exact :
+> il trouvait « burettes » par la racine.
+>
+> **Inutile en revanche de reconstruire son index** : SqlSearch2 désuffixe à la *recherche*, pas
+> à l'indexation — ses mots stockés sont identiques dans les deux cas. Reconstruire a coûté
+> 1 h 12 pour rien, dont 25 minutes de `DELETE FROM ca_sql_search_word_index WHERE table_num=57`
+> sur 49 millions de lignes, MariaDB à 100 % de CPU pendant tout ce temps.
+
+> **`SqlSearch2::tokenize()` ne nettoie rien si le moteur n'a jamais été instancié.** Elle
+> initialise `whitespace_tokenizer_regex` quand elle est nulle, mais pas celles de ponctuation et
+> de séparation, posées seulement par son *constructeur*. Appelée statiquement — ce qui est le
+> cas dès que Meilisearch est le moteur en service — elle découpe sur les espaces sans plus :
+> « …Saint-Roch[Ham-sur-Heure]… » garde ses crochets. Les tokens de `caTokenizeString()`
+> dépendaient donc du moteur configuré. `WLPlugSearchEngineMeilisearch::tokenize()` amorce
+> désormais une instance, une fois. Même famille que le défaut de dispatch trouvé par la session
+> INRAP, et à remonter en amont avec lui.
 
 ### Le coût d'indexation suit la latence SQL, pas le nombre de fiches
 
