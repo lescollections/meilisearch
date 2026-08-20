@@ -58,6 +58,11 @@ require_once(__CA_LIB_DIR__ . '/Plugins/SearchEngine/Meilisearch.php');
 
 define('SOURCE_LATENCE', 'meilisearch-latence');
 
+// Toutes les marques du connecteur sont écartées de la sélection, pas seulement la nôtre :
+// `diagnostiquer-recherches` et les mesures de fidélité écrivent elles aussi dans
+// `ca_search_log`, et une exécution qui les relirait comparerait Meilisearch à ses propres
+// rejeux. Piège payé quatre fois dans la journée du 20 août — d'où le filtre large.
+
 $combien     = 60;
 $jours       = 0;
 $min         = 1;
@@ -84,7 +89,7 @@ $qr = $db->query("
 		WHERE table_num = ? AND search_expression NOT IN ('', '*')
 		  AND search_source NOT LIKE ? AND log_datetime >= ? AND num_hits >= ?
 	) t WHERE rang = 1 ORDER BY log_datetime DESC LIMIT " . (int)$combien,
-	[$table_num, '%' . SOURCE_LATENCE . '%', $depuis, $min]);
+	[$table_num, '%meilisearch%', $depuis, $min]);
 
 $expressions = [];
 while ($qr->nextRow()) { $expressions[] = (string)$qr->get('search_expression'); }

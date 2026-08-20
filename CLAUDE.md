@@ -193,6 +193,27 @@ Le coût est de **+50 % de temps d'indexation** (13 min 15 contre 8 min 50), à 
 > parlent bien de la même expression. Trier l'échantillon par `num_hits DESC` est un second piège :
 > il ne sélectionne que des troncatures d'une ou deux lettres, atypiques de l'usage réel.
 
+### Le browse à 210 000 objets — mesuré le 20 août, mode tokens
+
+`execute()` reste en SQL : ce qu'on mesure ici est ce que coûte un browse complet, celui que le
+catalogueur déclenche en cliquant.
+
+| browse | Meilisearch | SqlSearch2 |
+|---|---|---|
+| `vierge` | 10 119 fiches en 299 ms | 10 076 en 86 ms |
+| `eglise` | 185 253 fiches en 3 637 ms | 177 032 en 1 095 ms |
+| `chaises 2*` | 1 021 fiches en **2,7 s** | 1 011 en **66,7 s** |
+| `il y en a 2*` | 1 778 fiches en **2,6 s** | 1 337 en **66,1 s** |
+
+Même profil que la recherche : **2,3 à 3,5× plus lent en ordinaire, 25× plus rapide sur les cas
+qui font tomber l'autre.** Les comptes se tiennent à moins de 5 %, ce qui vaut confirmation du
+mode tokens jusque dans le browse.
+
+**La facette déléguée, elle, tient sa promesse** : 6 à 8 ms dès qu'un critère restreint le fonds,
+contre 394 ms sur le fonds entier — le `filter` du moteur contre le `IN (…)` littéral du SQL. À
+cette échelle, `execute()` coûte donc mille fois la facette qu'il précède : c'est lui, et non
+elle, qui reste à traiter.
+
 ### Le gain, lui, est acquis : la queue de distribution
 
 | expression | Meilisearch | SqlSearch2 |
