@@ -43,7 +43,7 @@ class Config {
 		'search_limit'          => 2000000,
 		'debug'                 => 0,
 		'browse_facets'         => 1,
-		'tokenize_like_sqlsearch' => 0,
+		'tokenize_like_sqlsearch' => 1,
 	];
 
 	private static $constants = [
@@ -91,7 +91,13 @@ class Config {
 	 * cas par cas — au prix probable de la recherche de phrase et de la proximité, qui perdent
 	 * leur sens sur une liste de mots recollés.
 	 *
+	 * **Actif par défaut** depuis le 20 août 2026, sur mesure : 43 recherches réelles sur 45 à
+	 * ±5 % de SqlSearch2 contre 34 sans lui, et les phrases exactes au chiffre près là où le
+	 * texte brut se trompait d'un facteur trois à quatre cents. Le poser à 0 rend le découpage
+	 * de Meilisearch, plus large et plus tolérant, mais qui n'est pas celui du socle.
+	 *
 	 * Changer ce réglage **impose une réindexation** : il change ce qui est écrit dans l'index.
+	 * Une instance déjà en service doit donc être réindexée après montée de version.
 	 */
 	public function tokenizeLikeSqlSearch(): bool { return (bool)(int)$this->get('tokenize_like_sqlsearch'); }
 
