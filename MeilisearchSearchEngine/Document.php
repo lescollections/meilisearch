@@ -454,11 +454,19 @@ class Document {
 			if ($kind === 'intrinsic' && $this->isNumericIntrinsic($table_name, $field_name)) {
 				$out[] = (float)$value;
 			} elseif ($this->tokenize_like_sqlsearch) {
-				// Les mots du socle, un par un. Un numéro d'inventaire n'y passe pas : il a déjà
-				// ses variantes, produites par le greffon de numérotation de sa table.
-				foreach ($this->socleTokens($value) as $mot) {
-					if (strlen($mot)) { $out[] = $mot; }
-				}
+				// Les mots du socle, **recollés par des espaces** et non rangés un par un dans un
+				// tableau. La distinction n'est pas cosmétique : Meilisearch traite les éléments
+				// d'un tableau comme autant de valeurs séparées, jamais contiguës, et toute
+				// recherche de phrase y rend zéro — mesuré, « "chemin de croix" » passait de
+				// 2 243 fiches à une seule. Recollés, les mots restent voisins et la phrase
+				// fonctionne ; le moteur les redécoupe sur les espaces, ce qui est sans effet
+				// puisqu'un token n'en contient pas, et les caractères qu'ils gardent
+				// (« . _ - / ») lui sont déclarés non-séparateurs.
+				//
+				// Un numéro d'inventaire n'y passe pas : il a déjà ses variantes, produites par
+				// le greffon de numérotation de sa table.
+				$mots = $this->socleTokens($value);
+				if (sizeof($mots)) { $out[] = join(' ', $mots); }
 			} else {
 				$out[] = $value;
 			}

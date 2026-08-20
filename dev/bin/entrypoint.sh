@@ -53,6 +53,13 @@ dev-link-plugin
 # la voie qu'emprunte tout CollectiveAccess — ne la charge pas. Le symptôme est un réglage qui
 # « ne prend pas », sans le moindre message.
 cp /opt/meilisearch/local-app.conf.tmpl /var/www/html/app/conf/local/app.conf
+
+# Les facettes de test du harnais. Le nom porte __CA_APP_NAME__ — « meilisearch » pour la base
+# par défaut — parce que la couche locale **remplace** un bloc de configuration au lieu de le
+# fusionner : un browse.conf local partiel effacerait toutes les autres facettes, et un fichier
+# non suffixé s'appliquerait aussi aux bases clientes rapatriées.
+cp /opt/meilisearch/browse-local.conf.tmpl /var/www/html/app/conf/local/browse_meilisearch.conf
+chown www-data:www-data /var/www/html/app/conf/local/browse_meilisearch.conf
 chown www-data:www-data /var/www/html/app/conf/local/app.conf
 
 # ── Installer si besoin ───────────────────────────────────────────────────────────────────

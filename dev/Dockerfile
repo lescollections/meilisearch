@@ -67,6 +67,10 @@ RUN a2enmod rewrite headers \
 COPY conf/php-dev.ini /usr/local/etc/php/conf.d/zz-meilisearch-dev.ini
 COPY conf/setup.php /var/www/html/setup.php
 COPY conf/local-app.conf /opt/meilisearch/local-app.conf.tmpl
+# Le browse.conf du harnais : celui du socle, augmenté des facettes que le profil livré n'a pas
+# et que le pont doit pourtant savoir rendre. Posé sous le nom suffixé par __CA_APP_NAME__ pour
+# ne s'appliquer qu'à la base par défaut — une base cliente rapatriée garde le sien.
+COPY conf/browse-local.conf /opt/meilisearch/browse-local.conf.tmpl
 
 # ── Outils du harnais ─────────────────────────────────────────────────────────────────────
 COPY bin/entrypoint.sh /usr/local/bin/dev-entrypoint
