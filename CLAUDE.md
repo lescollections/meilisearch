@@ -208,10 +208,24 @@ profils métier emploient le plus. La traduction a demandé un attribut d'index 
   les seules tables ne suffit donc pas, et l'on écrivait les matériaux d'un objet dans le
   document d'un autre — une technique portée par une fiche en comptait quatre.
 
-**Résultat : `materiau_facet` (1 719 postes) et `technique_facet` (990 postes) sont conformes.**
-Le bilan du CIPAR passe de 22 conformes / 18 au SQL / 2 divergentes à **26 conformes / 10 au SQL
-/ 47 assumés / 4 divergentes**, ces quatre étant les deux facettes de dates comptées dans deux
-contextes — la même divergence d'une fiche sur 1874.
+**Un élément adossé à une liste** (`objet_present`) se traite à part : `value_longtext1` y porte
+l'identifiant de l'item — « 210 », non « Non » —, et c'est lui que la facette du socle rend comme
+identité de poste. On l'écrit tel quel, **avec les ancêtres de l'item**, comme pour les
+enregistrements liés. C'est ce qui rend un thésaurus utilisable : chercher « percussion » doit
+ramener les djembés, faute de quoi il faut déjà savoir classer l'objet qu'on cherche à
+identifier. Le socle fait de même en étendant son critère à la descendance
+(`getHierarchy(includeSelf)`) ; chez nous l'égalité sur un ancêtre suffit, et le comparateur
+reconnaît qu'une telle facette est hiérarchique — elle ne déclare pas de `table` dans
+`browse.conf`, c'est le type de son élément qui la désigne.
+
+> **La descendance n'est pas éprouvée sur données réelles.** La seule liste facettée du CIPAR est
+> `oui_non`, plate sous sa racine technique. Un vocabulaire à plusieurs niveaux — le thésaurus
+> organologie de la Phonothèque Historique de l'Océan Indien, par exemple — reste à trouver.
+
+**Résultat : les trois facettes sont conformes** — `materiau` 1 719 postes, `technique` 990,
+`objet_present` 2. Le bilan du CIPAR passe de 22 conformes / 18 au SQL / 2 divergentes à
+**28 conformes / 8 au SQL / 47 assumés / 4 divergentes**, ces quatre étant les deux facettes de
+dates comptées dans deux contextes — la même divergence d'une fiche sur 1874.
 
 Deux écarts assumés sont apparus au passage, et ils tiennent tous deux à des **espaces parasites
 dans les valeurs saisies** — plus fréquents qu'on ne croit dans un fonds réel :
@@ -237,6 +251,15 @@ lignes/s). Consenti, et nul si la table sujet ne déclare aucune facette de ce t
 éléments qu'une facette `attribute` de `browse.conf` désigne *et* que le pont sait rendre
 reçoivent un attribut.
 
+> **Une réindexation interrompue laisse l'index sans clé primaire.** `truncateIndex()` supprime
+> l'index ; si le processus meurt avant que `prepareIndex()` ne le recrée, le premier versement
+> de documents le recrée **implicitement** — et Meilisearch, faute de `primaryKey` déclarée,
+> tente de l'inférer. Elle échoue dès que plusieurs attributs finissent par « id », ce qui est
+> notre cas général : `index_primary_key_multiple_candidates_found`, lot après lot. Le symptôme
+> est opaque, l'index paraissant normal. `createIndex()` vérifie désormais la clé de l'index
+> existant et la repose — l'opération est acceptée tant qu'il est vide, ce qui est précisément
+> l'état d'après purge.
+
 ### À reprendre là (CIPAR)
 
 1. **La réindexation vide l'index avant de commencer** (`truncateIndex()`), comme le
@@ -246,8 +269,10 @@ reçoivent un attribut.
    l'eau, avec un ménage final par filtre pour les fiches supprimées entre-temps. **Décidé le
    20 août : la purge reste la règle, l'option est une amélioration à venir**, et elle vaut cher
    pour les instances dont la réindexation occupe une journée ouvrée.
-2. `objet_present` (élément de type liste) décline encore : une facette `attribute` sur liste se
-   compte sur des identifiants d'item et porte une hiérarchie à déplier.
+2. **Éprouver la descendance d'un thésaurus** : le mécanisme est écrit et les tests passent, mais
+   aucune liste hiérarchique n'a servi à le vérifier. `tests/browse-facettes.php` fabrique déjà
+   sa matière (vocabulaire « Abyssinie » marqué TEST-FAC) ; y ajouter un élément `attribute`
+   adossé à une liste à trois niveaux fermerait le trou en attendant un fonds réel.
 3. La divergence d'une fiche sur `year_facet`/`decade_facet` (poste 1874, SQL 10 010 contre
    10 009) **reste inexpliquée**. Borner l'intervalle au lieu de le rejeter a été essayé et
    mesuré faux : l'objet daté « 1851 - 19000 » peuplait alors chaque année jusqu'à 2076, dont 54

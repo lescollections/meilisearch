@@ -170,13 +170,14 @@ function item_de_liste_supprime($id): bool {
  * échouer la reconnaissance sans bruit.
  *
  * @return array ['groupes' => [clé => ['graphies' => nombre, 'nu' => bool]],
- *                 'cles'    => [value_id => clé]]
+ *                 'cles'    => [value_id => clé],
+ *                 'liste'   => bool — l'élément est-il adossé à une liste de valeurs ?]
  *         `nu` est vrai si le socle sera incapable de retrouver l'identifiant de ce groupe.
  *         `cles` permet de retrouver le groupe d'un poste par *appartenance* : le connecteur et
  *         cet outil ne choisissent pas forcément le même représentant dans un groupe.
  */
 function graphies_de_element(?string $element_code): array {
-	if (!$element_code) { return []; }
+	if (!$element_code) { return ['groupes' => [], 'cles' => [], 'liste' => false]; }
 
 	static $cache = [];
 	$parts = explode('.', $element_code);
@@ -186,7 +187,11 @@ function graphies_de_element(?string $element_code): array {
 	$out  = [];
 	$cles = [];
 	try {
-		$qr = (new Db())->query("
+		$db = new Db();
+		$qr_type = $db->query("SELECT datatype FROM ca_metadata_elements WHERE element_code = ?", [$code]);
+		$liste   = ($qr_type->nextRow() && (int)$qr_type->get('datatype') === 3);
+
+		$qr = $db->query("
 			SELECT v.value_id, v.value_longtext1
 			FROM ca_attribute_values v
 			INNER JOIN ca_metadata_elements e ON e.element_id = v.element_id
@@ -210,9 +215,9 @@ function graphies_de_element(?string $element_code): array {
 		}
 		foreach ($graphies as $cle => $formes) { $out[$cle]['graphies'] = sizeof($formes); }
 	} catch (Exception $e) {
-		return $cache[$code] = ['groupes' => [], 'cles' => []];
+		return $cache[$code] = ['groupes' => [], 'cles' => [], 'liste' => false];
 	}
-	return $cache[$code] = ['groupes' => $out, 'cles' => $cles];
+	return $cache[$code] = ['groupes' => $out, 'cles' => $cles, 'liste' => $liste];
 }
 
 /**
@@ -379,7 +384,15 @@ $comparer = function (string $facette, array $criteres, string $intitule)
 		// distincts. On interroge la hiérarchie réelle plutôt que les seuls enfants présents
 		// dans la facette — un ancêtre dont les descendants comptés sont des petits-enfants
 		// n'a aucun enfant *dans la facette*, et passerait pour une feuille.
-		if (est_une_branche($info['table'] ?? null, $id)) { $branches++; continue; }
+		// Une facette `attribute` adossée à une liste est hiérarchique elle aussi : ses postes
+		// sont des items de vocabulaire, et un thésaurus a des branches. Elle ne déclare pas de
+		// `table` dans browse.conf — c'est son type d'élément qui la désigne.
+		$table_hier = $info['table'] ?? null;
+		if (!$table_hier && ($info['type'] ?? null) === 'attribute'
+			&& graphies_de_element($info['element_code'] ?? null)['liste']) {
+			$table_hier = 'ca_list_items';
+		}
+		if (est_une_branche($table_hier, $id)) { $branches++; continue; }
 
 		// Le SQL additionne une ligne par type de relation : un enregistrement lié deux fois
 		// à la même autorité y compte deux fois. Notre compte est celui des fiches.

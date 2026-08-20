@@ -460,6 +460,18 @@ class Facets {
 			$value = str_replace('&#47;', '/', urldecode((string)$value));
 			if (!strlen($value)) { return null; }
 
+			if ($element['datatype'] === 3) {
+				// Le critère porte l'identifiant de l'item, celui-là même que l'index contient.
+				if (!ctype_digit($value)) { return null; }
+
+				// Le socle étend un critère de liste à toute la descendance de l'item
+				// (`getHierarchy(includeSelf)`) ; chaque document portant les ancêtres de ses
+				// items, l'égalité sur un ancêtre couvre sa descendance par construction. Même
+				// mécanique que pour les autorités.
+				$par_critere[] = $attr . ' = ' . $this->quote($value);
+				continue;
+			}
+
 			$cle = $this->cleDuCritere($element['element_id'], $value);
 			if ($cle === null) { return null; }
 
@@ -680,28 +692,37 @@ class Facets {
 		$criteria = $browse->getCriteria($facet_name);
 		if (!is_array($criteria)) { $criteria = []; }
 
-		// L'index ne porte que des clés — casse et accents ôtés, comme le fait la collation sous
-		// laquelle le socle groupe. La distribution est donc déjà celle de ses postes ; il ne
-		// reste qu'à leur rendre leur libellé et leur identifiant, que la base seule connaît.
-		$groupes = $this->valueGroups($element['element_id']);
+		// Un élément adossé à une liste porte l'identifiant de l'item : la distribution est déjà
+		// celle des postes du socle, il ne reste qu'à leur donner leur libellé et leur place dans
+		// la liste.
+		if ($element['datatype'] === 3) {
+			$valeurs = $this->postesDeListe($element, $distribution, $criteria, $options);
+			if ($valeurs === null) { return null; }
+		} else {
+			// Sinon l'index ne porte que des clés — casse et accents ôtés, comme le fait la
+			// collation sous laquelle le socle groupe. La distribution est donc déjà celle de ses
+			// postes ; il ne reste qu'à leur rendre leur libellé et leur identifiant, que la base
+			// seule connaît.
+			$groupes = $this->valueGroups($element['element_id']);
 
-		$valeurs = [];
-		foreach ($distribution as $cle => $compte) {
-			$cle = trim((string)$cle);
-			if (!strlen($cle)) { continue; }                 // le socle écarte les vides
+			$valeurs = [];
+			foreach ($distribution as $cle => $compte) {
+				$cle = trim((string)$cle);
+				if (!strlen($cle)) { continue; }                 // le socle écarte les vides
 
-			// Clé que la base ne porte pas : même silence que le SQL, qui ne compte que ce
-			// qu'il lit dans ca_attribute_values.
-			if (!isset($groupes[$cle])) { continue; }
+				// Clé que la base ne porte pas : même silence que le SQL, qui ne compte que ce
+				// qu'il lit dans ca_attribute_values.
+				if (!isset($groupes[$cle])) { continue; }
 
-			$id = (string)$groupes[$cle]['id'];
-			if (isset($criteria[$id])) { continue; }         // déjà en critère : ne pas re-proposer
+				$id = (string)$groupes[$cle]['id'];
+				if (isset($criteria[$id])) { continue; }         // déjà en critère : ne pas re-proposer
 
-			$valeurs[$cle] = [
-				'id'            => $groupes[$cle]['id'],
-				'label'         => $groupes[$cle]['label'],
-				'content_count' => (int)$compte,
-			];
+				$valeurs[$cle] = [
+					'id'            => $groupes[$cle]['id'],
+					'label'         => $groupes[$cle]['label'],
+					'content_count' => (int)$compte,
+				];
+			}
 		}
 
 		if (!empty($options['checkAvailabilityOnly'])) {
@@ -709,8 +730,91 @@ class Facets {
 			return sizeof($valeurs) > 1;
 		}
 		if (!sizeof($valeurs)) { return []; }
-		ksort($valeurs);
+
+		// Le socle trie une liste selon le tri déclaré pour elle, et une valeur textuelle par
+		// `ksort()` sur la clé en minuscules — ce que nos clés sont déjà.
+		if ($element['datatype'] === 3) {
+			if (function_exists('caSortArrayByKeyInValue')) { $valeurs = caSortArrayByKeyInValue($valeurs, ['sort']); }
+		} else {
+			ksort($valeurs);
+		}
 		return $valeurs;
+	}
+
+	/**
+	 * Postes d'une facette `attribute` adossée à une liste.
+	 *
+	 * L'index porte l'identifiant de l'item ; la distribution est donc déjà celle des postes du
+	 * socle. Reste à leur donner leur libellé, leur rang et leur place dans la hiérarchie de la
+	 * liste — et à appliquer le filtre d'accès, qui porte chez le socle sur l'item de liste
+	 * lui-même et non sur les fiches (`li.access`, même règle que pour `fieldList`).
+	 *
+	 * @return array|null les postes, ou null pour décliner.
+	 */
+	private function postesDeListe(array $element, array $distribution, array $criteria, array $options): ?array {
+		$list_code = $this->listCode((int)$element['list_id']);
+		if ($list_code === null) { return $this->decliner("liste {$element['list_id']} introuvable"); }
+
+		list($items_par_id, , $sort_key) = $this->listItems($list_code);
+		$hierarchie = $this->listHierarchy((int)$element['list_id']);
+
+		$check_access = null;
+		if (!empty($options['checkAccess']) && is_array($options['checkAccess'])) {
+			$check_access = array_map('intval', $options['checkAccess']);
+		}
+
+		$valeurs = [];
+		foreach ($distribution as $item_id => $compte) {
+			$item_id = (string)$item_id;
+			if (!ctype_digit($item_id)) { continue; }
+			if (isset($criteria[$item_id])) { continue; }        // déjà en critère
+
+			$item = $items_par_id[$item_id] ?? null;
+			if (!$item) { continue; }                            // hors liste : même silence que le SQL
+			if (!empty($hierarchie[$item_id]['deleted'])) { continue; }
+			if ($check_access !== null && $item['access'] !== null && !in_array((int)$item['access'], $check_access, true)) { continue; }
+
+			$valeurs[$item_id] = [
+				'id'            => (int)$item_id,
+				'label'         => $item['label'],
+				'parent_id'     => $hierarchie[$item_id]['parent_id'] ?? null,
+				'child_count'   => $hierarchie[$item_id]['child_count'] ?? 0,
+				'sort'          => $sort_key ? ($item[$sort_key] ?? null) : null,
+				'content_count' => (int)$compte,
+			];
+		}
+		return $valeurs;
+	}
+
+	/** Code d'une liste, par son identifiant. */
+	private function listCode(int $list_id): ?string {
+		static $cache = [];
+		if (array_key_exists($list_id, $cache)) { return $cache[$list_id]; }
+		$qr = $this->db->query("SELECT list_code FROM ca_lists WHERE list_id = ?", [$list_id]);
+		return $cache[$list_id] = ($qr->nextRow() ? (string)$qr->get('list_code') : null);
+	}
+
+	/** Parent, nombre d'enfants et état de suppression de chaque item d'une liste. */
+	private function listHierarchy(int $list_id): array {
+		static $cache = [];
+		if (isset($cache[$list_id])) { return $cache[$list_id]; }
+
+		$out = [];
+		$qr = $this->db->query(
+			"SELECT item_id, parent_id, deleted FROM ca_list_items WHERE list_id = ?", [$list_id]
+		);
+		while ($qr->nextRow()) {
+			$out[(string)$qr->get('item_id')] = [
+				'parent_id'   => $qr->get('parent_id'),
+				'deleted'     => (int)$qr->get('deleted'),
+				'child_count' => 0,
+			];
+		}
+		foreach ($out as $id => $ligne) {
+			$parent = (string)($ligne['parent_id'] ?? '');
+			if (strlen($parent) && isset($out[$parent])) { $out[$parent]['child_count']++; }
+		}
+		return $cache[$list_id] = $out;
 	}
 
 	/**
@@ -731,8 +835,14 @@ class Facets {
 
 		$element = $this->element($code);
 		if ($element === null) { return $this->decliner("élément « {$code} » inconnu"); }
-		if ($element['datatype'] !== 1) {
+
+		// Valeur textuelle, ou liste de valeurs. Un élément adossé à une table liée relève
+		// d'authority, une date de normalizedDates : ni l'un ni l'autre ne se compte ici.
+		if (!in_array($element['datatype'], [1, 3], true)) {
 			return $this->decliner("élément « {$code} » de type " . $element['datatype'] . " non traduit");
+		}
+		if ($element['datatype'] === 3 && !$element['list_id']) {
+			return $this->decliner("élément « {$code} » de type liste sans liste");
 		}
 		return $element + ['code' => $code];
 	}

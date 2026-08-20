@@ -244,14 +244,13 @@ class Schema {
 		$codes = array_values(array_unique($codes));
 		if (!sizeof($codes) || !class_exists('\Db')) { return $cache[$subject_table] = $codes; }
 
-		// Ne garder que les éléments à valeur textuelle : ce sont les seuls que le pont sache
-		// rendre (Facets::facetElement). Une liste se compte sur des identifiants d'item et
-		// porte une hiérarchie à déplier ; un élément adossé à une table relève d'authority.
-		// Les écarter ici plutôt qu'à la lecture évite de doubler dans l'index des valeurs dont
-		// la facette repartira de toute façon au SQL.
+		// Ne garder que les types que le pont sait rendre (voir Facets::facetElement) : valeur
+		// textuelle ou liste. Un élément adossé à une table liée relève d'authority, une date de
+		// normalizedDates. Les écarter ici plutôt qu'à la lecture évite de doubler dans l'index des
+		// valeurs dont la facette repartira de toute façon au SQL.
 		try {
 			$qr = (new \Db())->query(
-				"SELECT element_code FROM ca_metadata_elements WHERE element_code IN (?) AND datatype = 1", [$codes]
+				"SELECT element_code FROM ca_metadata_elements WHERE element_code IN (?) AND datatype IN (1, 3)", [$codes]
 			);
 			$textuels = [];
 			while ($qr->nextRow()) { $textuels[] = (string)$qr->get('element_code'); }

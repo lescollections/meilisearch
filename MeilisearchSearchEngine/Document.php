@@ -120,7 +120,7 @@ class Document {
 		$out = [];
 		try {
 			$qr = $this->db()->query("
-				SELECT e.element_code, v.value_longtext1
+				SELECT e.element_code, e.datatype, v.value_longtext1
 				FROM ca_attribute_values v
 				INNER JOIN ca_attributes a ON a.attribute_id = v.attribute_id
 				INNER JOIN ca_metadata_elements e ON e.element_id = v.element_id
@@ -131,7 +131,26 @@ class Document {
 				$valeur = trim((string)$qr->get('value_longtext1'));
 				if (!strlen($valeur)) { continue; }
 				$attribut = $this->schema->attributeFacetAttribute((string)$qr->get('element_code'));
-				// La clé, non la graphie : une fiche portant « Béton » et « beton » ne doit
+
+				// Un élément adossé à une liste porte l'identifiant de l'item dans
+				// `value_longtext1` — « 210 », et non « Non ». C'est cet identifiant que la
+				// facette du socle rend comme identité de poste, et sur lequel son critère filtre.
+				//
+				// On y joint les **ancêtres** de l'item, comme pour les enregistrements liés.
+				// C'est ce qui rend un thésaurus utilisable : chercher « percussion » doit
+				// ramener les djembés et les cajóns, faute de quoi il faut déjà savoir classer
+				// l'objet qu'on cherche à identifier. Le socle fait la même chose de son côté,
+				// en étendant le critère à la descendance de l'item retenu.
+				if ((int)$qr->get('datatype') === 3) {
+					if (!ctype_digit($valeur)) { continue; }
+					$out[$attribut][] = $valeur;
+					foreach ($this->hierarchyAncestors('ca_list_items', (int)$valeur) as $ancetre) {
+						$out[$attribut][] = (string)$ancetre;
+					}
+					continue;
+				}
+
+				// Sinon la clé, non la graphie : une fiche portant « Béton » et « beton » ne doit
 				// compter qu'une fois, comme dans le COUNT(DISTINCT row_id) du socle, dont le
 				// GROUP BY passe par une collation insensible à la casse et aux accents. Le
 				// libellé à afficher se retrouve en base à la lecture.
