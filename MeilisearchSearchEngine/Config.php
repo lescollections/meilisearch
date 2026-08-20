@@ -43,6 +43,7 @@ class Config {
 		'search_limit'          => 2000000,
 		'debug'                 => 0,
 		'browse_facets'         => 1,
+		'tokenize_like_sqlsearch' => 0,
 	];
 
 	private static $constants = [
@@ -56,6 +57,7 @@ class Config {
 		'api_key'      => 'CA_MEILISEARCH_API_KEY',
 		'index_prefix' => 'CA_MEILISEARCH_INDEX_PREFIX',
 		'debug'        => 'CA_MEILISEARCH_DEBUG',
+		'tokenize_like_sqlsearch' => 'CA_MEILISEARCH_TOKENIZE_LIKE_SQLSEARCH',
 	];
 
 	public function __construct() {
@@ -79,6 +81,19 @@ class Config {
 	public function searchLimit(): int     { return max(1, (int)$this->get('search_limit')); }
 	public function debug(): bool          { return (bool)(int)$this->get('debug'); }
 	public function browseFacets(): bool   { return (bool)(int)$this->get('browse_facets'); }
+
+	/**
+	 * Indexer les *tokens* de SqlSearch2 plutôt que le texte brut.
+	 *
+	 * Meilisearch découpe à sa façon, SqlSearch2 à la sienne : « 211467819_Saint-Roch[…]_1 »
+	 * reste un mot chez lui et en devient plusieurs chez nous, d'où des recherches plus larges.
+	 * Lui donner directement les mots du socle rend l'équivalence structurelle plutôt que réglée
+	 * cas par cas — au prix probable de la recherche de phrase et de la proximité, qui perdent
+	 * leur sens sur une liste de mots recollés.
+	 *
+	 * Changer ce réglage **impose une réindexation** : il change ce qui est écrit dans l'index.
+	 */
+	public function tokenizeLikeSqlSearch(): bool { return (bool)(int)$this->get('tokenize_like_sqlsearch'); }
 
 	/**
 	 * Le greffon applicatif est-il installé ? Le connecteur seul ne suffit pas : les deux

@@ -160,7 +160,7 @@ class WLPlugSearchEngineMeilisearch extends BaseSearchPlugin implements IWLPlugS
 		Meilisearch\Log::setDebug($this->ms_config->debug());
 
 		$this->schema      = new Meilisearch\Schema($this->ms_config->indexPrefix());
-		$this->doc_builder = new Meilisearch\Document($this->schema);
+		$this->doc_builder = new Meilisearch\Document($this->schema, $this->ms_config->tokenizeLikeSqlSearch());
 
 		parent::__construct($db);
 	}
@@ -256,7 +256,8 @@ class WLPlugSearchEngineMeilisearch extends BaseSearchPlugin implements IWLPlugS
 		try {
 			$query = new Meilisearch\Query(
 				$this->schema, $search_expression, $rewritten_query,
-				(string)\Datamodel::getTableName($subject_tablenum)
+				(string)\Datamodel::getTableName($subject_tablenum),
+				$this->ms_config->tokenizeLikeSqlSearch()
 			);
 			$this->searched_terms = $query->getSearchedTerms();
 
@@ -987,7 +988,9 @@ class WLPlugSearchEngineMeilisearch extends BaseSearchPlugin implements IWLPlugS
 			$this->schema->baseFilterableAttributes($table), $existing
 		)));
 
-		$this->getClient()->updateSettings($index, $this->schema->indexSettings(null, $filterable));
+		$this->getClient()->updateSettings($index, $this->schema->indexSettings(
+			null, $filterable, $this->ms_config->tokenizeLikeSqlSearch()
+		));
 
 		self::$filterable_attributes[$index] = array_flip($filterable);
 		self::$prepared_indexes[$index]     = true;
