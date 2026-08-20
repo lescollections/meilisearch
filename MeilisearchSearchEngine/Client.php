@@ -13,6 +13,8 @@
 
 namespace Meilisearch;
 
+require_once(__CA_LIB_DIR__ . '/Plugins/SearchEngine/Meilisearch/Log.php');
+
 /**
  * Panne du moteur : injoignable, délai dépassé, réponse illisible, tâche en échec.
  * Le connecteur la laisse remonter à l'indexation et l'attrape à la recherche.
@@ -110,9 +112,34 @@ class Client {
 		try {
 			$task = $this->request('POST', '/indexes', ['uid' => $uid, 'primaryKey' => $primary_key]);
 			$this->waitForTask($task);
+			return;
 		} catch (ClientException $e) {
-			if (strpos($e->getMessage(), 'index_already_exists') !== false) { return; }
-			throw $e;
+			if (strpos($e->getMessage(), 'index_already_exists') === false) { throw $e; }
+		}
+
+		// L'index existait déjà — encore faut-il qu'il porte la bonne clé primaire. Un index
+		// *créé implicitement* par un versement de documents n'en a pas : Meilisearch tente alors
+		// de l'inférer à chaque lot et échoue dès que plusieurs attributs finissent par « id »
+		// (`index_primary_key_multiple_candidates_found`), ce qui est notre cas général. La
+		// situation se produit quand une réindexation est interrompue entre la suppression de
+		// l'index et sa recréation — un Ctrl-C, une coupure, un processus tué suffisent — et le
+		// symptôme est opaque : l'indexation échoue lot après lot sans que l'index paraisse
+		// anormal. On répare ici, tant que l'index est vide.
+		try {
+			$actuel = $this->request('GET', '/indexes/' . rawurlencode($uid));
+			if (($actuel['primaryKey'] ?? null) === $primary_key) { return; }
+
+			$task = $this->request('PATCH', '/indexes/' . rawurlencode($uid), ['primaryKey' => $primary_key]);
+			$this->waitForTask($task);
+			Log::warn("Index {$uid} : clé primaire « {$primary_key} » reposée (index créé sans elle).");
+		} catch (ClientException $e) {
+			// Un index non vide refuse le changement de clé : le dire clairement plutôt que de
+			// laisser échouer chaque lot ensuite.
+			throw new ClientException(
+				"L'index {$uid} n'a pas la clé primaire « {$primary_key} » et ne peut la recevoir : "
+				. $e->getMessage() . ". Le vider (truncateIndex) puis réindexer.",
+				$e->getCode()
+			);
 		}
 	}
 
