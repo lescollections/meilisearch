@@ -393,7 +393,7 @@ class Schema {
 	 * complet d'identifiants ; un plafond bas se lit comme « la recherche ne trouve que les
 	 * mille premiers », sans aucun message.
 	 */
-	public function indexSettings(?array $searchable_attributes = null, array $filterable_attributes = []): array {
+	public function indexSettings(?array $searchable_attributes = null, array $filterable_attributes = [], bool $tokenize_like_sqlsearch = false): array {
 		$settings = [
 			'pagination'          => ['maxTotalHits' => 2000000],
 			'filterableAttributes' => array_values(array_unique(array_merge([self::PK, self::TABLE], $filterable_attributes))),
@@ -413,6 +413,14 @@ class Schema {
 			],
 			'searchCutoffMs'      => 5000,
 		];
+
+		// Quand on indexe les mots du socle, Meilisearch ne doit pas les redécouper : SqlSearch2
+		// garde « . _ - / » à l'intérieur d'un mot (il ne les retire qu'en tête et en queue),
+		// alors que Meilisearch y coupe. Sans cette déclaration, « 211467819_saint-roch… »
+		// redeviendrait plusieurs termes à l'indexation et tout le bénéfice serait perdu.
+		if ($tokenize_like_sqlsearch) {
+			$settings['nonSeparatorTokens'] = ['.', '_', '-', '/'];
+		}
 		if ($searchable_attributes !== null) {
 			$settings['searchableAttributes'] = array_values($searchable_attributes);
 		}

@@ -134,10 +134,47 @@ Trois corrections, dans l'ordre où elles ont compté :
 | `roch` | 2 999 | 965 |
 
 **17 expressions réelles sur 40 sont à ±5 %**, et le diagnostic historique passe de 35 à 68 sur
-200. Ce qui reste tient surtout aux **valeurs composites** : SqlSearch2 garde
-`211467819_Saint-Roch[Ham-sur-Heure]_1` en un seul token, nous le découpons. La piste, non
-mesurée à ce jour, serait d'indexer les tokens de SqlSearch2 plutôt que le texte brut — au prix
-de la recherche de phrase et de la proximité.
+200. Ce qui restait tenait aux **valeurs composites** : SqlSearch2 garde
+`211467819_Saint-Roch[Ham-sur-Heure]_1` en un seul token, nous le découpions. D'où le mode
+ci-dessous.
+
+### `tokenize_like_sqlsearch` — l'équivalence par construction
+
+Le connecteur peut indexer **les mots que SqlSearch2 tirerait de la valeur**, au lieu du texte
+brut. Réglage `tokenize_like_sqlsearch` (0 par défaut), lisible aussi dans l'environnement ;
+**en changer impose une réindexation**.
+
+Trois pièces, et il les faut toutes :
+
+1. `Document::normalizeValues()` passe chaque valeur texte par le tokeniseur du socle. Les
+   numéros d'inventaire n'y passent pas : ils ont déjà leurs variantes ;
+2. `nonSeparatorTokens = [". _ - /"]` sur l'index — les caractères que SqlSearch2 garde à
+   l'intérieur d'un mot alors qu'il ne les retire qu'en tête et en queue. Sans cette
+   déclaration, Meilisearch redécoupe les tokens et tout le bénéfice est perdu ;
+3. **la requête passe par le même tokeniseur**, sinon l'asymétrie fait des trous : SqlSearch2
+   retire le point final d'un mot, si bien que « Autel majeur. » est indexé « majeur » et
+   cherché « majeur. ». La correspondance exacte échouait et la recherche rendait **zéro** là où
+   le SQL rendait 2 582 fiches.
+
+Mesure sur 45 recherches plein texte du CIPAR, liste figée :
+
+| | à ±5 % de SqlSearch2 |
+|---|---|
+| texte brut | 34 sur 45 — 76 % |
+| **tokens du socle** | **42 sur 45 — 93 %** |
+
+`roch` passe de 2 999 à 968 pour 965 attendus ; `Henri` et `waremme` tombent exactement juste.
+Il ne reste que trois cas, tous marqués par un caractère de tête — `#Eglise`, « ␣jauche »,
+« ␣20 ». Le coût est de **+50 % de temps d'indexation** (13 min 15 contre 8 min 50), à comparer
+aux 1 h 12 de SqlSearch2 sur le même fonds.
+
+> **Mesurer la fidélité demande une liste d'expressions *figée*.** `ObjectSearch` écrit chaque
+> recherche dans `ca_search_log` : trois exécutions qui relisent l'historique à tour de rôle ne
+> portent pas sur les mêmes expressions, et les colonnes ne se correspondent plus. Deux séries de
+> chiffres ont été produites et jetées pour cette raison. La liste se tire une fois, se borne aux
+> entrées antérieures aux essais, et le comparateur vérifie ligne à ligne que les trois colonnes
+> parlent bien de la même expression. Trier l'échantillon par `num_hits DESC` est un second piège :
+> il ne sélectionne que des troncatures d'une ou deux lettres, atypiques de l'usage réel.
 
 ### Le gain, lui, est acquis : la queue de distribution
 

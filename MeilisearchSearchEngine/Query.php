@@ -54,8 +54,12 @@ class Query {
 	/** @var string|null table sujet, pour rattacher un champ tapé sans la sienne */
 	private $subject_table = null;
 
-	public function __construct(Schema $schema, string $search_expression, $rewritten_query, ?string $subject_table = null) {
-		$this->schema        = $schema;
+	/** @var bool l'index porte les tokens du socle : la requête doit les employer aussi */
+	private $tokenize_like_sqlsearch = false;
+
+	public function __construct(Schema $schema, string $search_expression, $rewritten_query, ?string $subject_table = null, bool $tokenize_like_sqlsearch = false) {
+		$this->schema                  = $schema;
+		$this->tokenize_like_sqlsearch = $tokenize_like_sqlsearch;
 		$this->subject_table = ($subject_table !== null && $subject_table !== '') ? $subject_table : null;
 
 		if ($rewritten_query !== null) {
@@ -307,6 +311,15 @@ class Query {
 		$text     = trim($text, " \t\n\r\0\x0B");
 		if ($text === '') { return null; }
 
+		// Quand l'index porte les mots du socle, la requête doit porter les mêmes : il retire le
+		// point final d'un terme (`separator_tokenizer_regex` en queue), si bien que « Autel
+		// majeur. » est indexé « majeur » et cherché « majeur. » — la correspondance exacte
+		// échouait et la recherche rendait zéro là où le SQL rendait 2 582 fiches.
+		if ($this->tokenize_like_sqlsearch) {
+			$text = $this->socleToken($text);
+			if ($text === '') { return null; }
+		}
+
 		$field = (string)$term->field;
 
 		$clause = [
@@ -329,6 +342,21 @@ class Query {
 
 		$this->clauses[] = $clause;
 		return $clause;
+	}
+
+	/**
+	 * Le terme, passé par le tokeniseur du socle. Un terme peut en donner plusieurs (« saint
+	 * roch » tapé sans espace insécable) : on les recolle, Meilisearch les traitant alors comme
+	 * des mots contigus — ce que le socle fait aussi d'une expression à plusieurs mots.
+	 */
+	private function socleToken(string $text): string {
+		if (!class_exists('\\WLPlugSearchEngineMeilisearch')) { return $text; }
+		try {
+			$mots = \WLPlugSearchEngineMeilisearch::tokenize($text, true);
+		} catch (\Throwable $e) {
+			return $text;
+		}
+		return (is_array($mots) && sizeof($mots)) ? join(' ', $mots) : '';
 	}
 
 	/**

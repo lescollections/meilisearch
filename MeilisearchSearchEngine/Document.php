@@ -24,8 +24,34 @@ class Document {
 	/** @var array cache des noms de champs résolus, indexé par "tablenum/fieldname" */
 	private static $field_name_cache = [];
 
-	public function __construct(Schema $schema) {
-		$this->schema = $schema;
+	/** @var bool indexer les tokens du socle plutôt que le texte brut */
+	private $tokenize_like_sqlsearch;
+
+	public function __construct(Schema $schema, bool $tokenize_like_sqlsearch = false) {
+		$this->schema                 = $schema;
+		$this->tokenize_like_sqlsearch = $tokenize_like_sqlsearch;
+	}
+
+	/**
+	 * Les mots que SqlSearch2 tirerait de cette valeur.
+	 *
+	 * Le but est l'équivalence : Meilisearch découpe à sa façon, SqlSearch2 à la sienne, et
+	 * « 211467819_Saint-Roch[Ham-sur-Heure]_1 » reste un mot chez lui quand il en devient
+	 * plusieurs chez nous. Lui donner les mots du socle règle la question à la source.
+	 *
+	 * Encore faut-il que Meilisearch ne les redécoupe pas : les caractères que SqlSearch2 garde
+	 * à l'intérieur d'un mot lui sont déclarés non-séparateurs (voir Schema::indexSettings).
+	 *
+	 * @return array les mots, ou la valeur inchangée si le tokeniseur du socle est indisponible.
+	 */
+	private function socleTokens(string $valeur): array {
+		if (!class_exists('\WLPlugSearchEngineMeilisearch')) { return [$valeur]; }
+		try {
+			$mots = \WLPlugSearchEngineMeilisearch::tokenize($valeur);
+		} catch (\Throwable $e) {
+			return [$valeur];
+		}
+		return (is_array($mots) && sizeof($mots)) ? $mots : [];
 	}
 
 	/**
@@ -427,6 +453,12 @@ class Document {
 
 			if ($kind === 'intrinsic' && $this->isNumericIntrinsic($table_name, $field_name)) {
 				$out[] = (float)$value;
+			} elseif ($this->tokenize_like_sqlsearch) {
+				// Les mots du socle, un par un. Un numéro d'inventaire n'y passe pas : il a déjà
+				// ses variantes, produites par le greffon de numérotation de sa table.
+				foreach ($this->socleTokens($value) as $mot) {
+					if (strlen($mot)) { $out[] = $mot; }
+				}
 			} else {
 				$out[] = $value;
 			}
