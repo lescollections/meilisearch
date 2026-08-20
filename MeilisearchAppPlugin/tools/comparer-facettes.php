@@ -160,6 +160,97 @@ function item_de_liste_supprime($id): bool {
 	}
 }
 
+/**
+ * Les graphies d'un élément, groupées comme le connecteur les groupe.
+ *
+ * Le regroupement se fait en PHP et non en SQL, parce que `TRIM()` de MySQL ne retire que les
+ * espaces : il laisse en place les retours à la ligne, qu'une saisie au clavier dépose plus
+ * souvent qu'on ne croit. « Plâtre coulé\n » et « Plâtre coulé » lui paraissent donc distincts
+ * là où `trim()` de PHP — celui qu'emploie l'indexation — les réunit. Comparer en SQL faisait
+ * échouer la reconnaissance sans bruit.
+ *
+ * @return array ['groupes' => [clé => ['graphies' => nombre, 'nu' => bool]],
+ *                 'cles'    => [value_id => clé]]
+ *         `nu` est vrai si le socle sera incapable de retrouver l'identifiant de ce groupe.
+ *         `cles` permet de retrouver le groupe d'un poste par *appartenance* : le connecteur et
+ *         cet outil ne choisissent pas forcément le même représentant dans un groupe.
+ */
+function graphies_de_element(?string $element_code): array {
+	if (!$element_code) { return []; }
+
+	static $cache = [];
+	$parts = explode('.', $element_code);
+	$code  = array_pop($parts);
+	if (isset($cache[$code])) { return $cache[$code]; }
+
+	$out  = [];
+	$cles = [];
+	try {
+		$qr = (new Db())->query("
+			SELECT v.value_id, v.value_longtext1
+			FROM ca_attribute_values v
+			INNER JOIN ca_metadata_elements e ON e.element_id = v.element_id
+			WHERE e.element_code = ? AND v.value_longtext1 IS NOT NULL AND v.value_longtext1 <> ''
+		", [$code]);
+		$graphies = [];
+		while ($qr->nextRow()) {
+			$brut = (string)$qr->get('value_longtext1');
+			$nu   = trim($brut);
+			if (!strlen($nu)) { continue; }
+			$cle  = mb_strtolower(function_exists('caRemoveAccents') ? caRemoveAccents($nu) : $nu, 'UTF-8');
+
+			$id = (int)$qr->get('value_id');
+			$cles[$id] = $cle;
+			if (!isset($out[$cle])) { $out[$cle] = ['id' => $id, 'graphies' => 0, 'nu' => true]; }
+			$out[$cle]['id'] = min($out[$cle]['id'], $id);
+			// Le socle retrouvera son identifiant si au moins une graphie est déjà « propre » :
+			// c'est sur la valeur trimée qu'il interroge getValueIDFor().
+			if ($brut === $nu) { $out[$cle]['nu'] = false; }
+			$graphies[$cle][$brut] = true;
+		}
+		foreach ($graphies as $cle => $formes) { $out[$cle]['graphies'] = sizeof($formes); }
+	} catch (Exception $e) {
+		return $cache[$code] = ['groupes' => [], 'cles' => []];
+	}
+	return $cache[$code] = ['groupes' => $out, 'cles' => $cles];
+}
+
+/**
+ * Le socle rend-il ce poste *sans identifiant*, faute de retrouver sa propre valeur ?
+ *
+ * Sa facette `attribute` affiche `trim(getDisplayValue())` puis redemande l'identifiant de cette
+ * valeur à `ca_attribute_values::getValueIDFor()`. Si aucune graphie du groupe n'est déjà propre,
+ * la recherche échoue : le poste sort avec `id` à null et le comparateur le range sous son
+ * libellé, tandis que nous le rangeons sous son value_id. Rend cet identifiant, ou null.
+ */
+function socle_sans_identifiant(?string $element_code, $libelle): ?int {
+	if (!is_string($libelle) || is_numeric($libelle)) { return null; }
+
+	$cle = mb_strtolower(function_exists('caRemoveAccents') ? caRemoveAccents(trim($libelle)) : trim($libelle), 'UTF-8');
+	$tout = graphies_de_element($element_code);
+	return (isset($tout['groupes'][$cle]) && $tout['groupes'][$cle]['nu']) ? $tout['groupes'][$cle]['id'] : null;
+}
+
+/**
+ * Ce poste rassemble-t-il des graphies que le socle éparpille ?
+ *
+ * Une valeur saisie avec une espace ou un retour à la ligne en trop — au CIPAR, « fer forgé\n »
+ * à côté de « Fer forgé » — forme pour MySQL un groupe distinct. Le socle en fait plusieurs
+ * postes, puis les réduit à un seul en les indexant par `strToLower(trim(...))` : le dernier
+ * écrase les précédents, avec son seul compte, et les autres fiches disparaissent de la facette.
+ * Nous trimons à l'indexation, donc nous les rassemblons — notre compte est celui des fiches que
+ * le clic rend vraiment.
+ *
+ * @return int|null nombre de graphies en cause, ou null si ce n'est pas ce cas de figure.
+ */
+function graphies_eparpillees(?string $element_code, $id): ?int {
+	if (!is_numeric($id)) { return null; }
+	$tout = graphies_de_element($element_code);
+	$cle  = $tout['cles'][(int)$id] ?? null;
+	if ($cle === null || !isset($tout['groupes'][$cle])) { return null; }
+	return ($tout['groupes'][$cle]['graphies'] > 1) ? $tout['groupes'][$cle]['graphies'] : null;
+}
+
 /** Réduit un contenu de facette à [id => compte]. */
 $comptes = function ($contenu): array {
 	$out = [];
@@ -175,6 +266,21 @@ printf("\033[90mtable %s — moteur en service : %s%s\033[0m\n\n",
 	$table,
 	Configuration::load()->get('search_engine_plugin'),
 	$patch_pose ? '' : " — \033[33mpatch du Browse absent\033[0m");
+
+// Comparer pendant qu'un index se reconstruit ne compare rien : il manque alors une part
+// arbitraire des documents, et toutes les facettes paraissent diverger. Vécu.
+try {
+	$moteur_ms = SearchBase::newSearchEngine('Meilisearch');
+	$index_ms  = $moteur_ms->getSchema()->indexName($table);
+	$stats_ms  = $moteur_ms->getClient()->indexStats($index_ms);
+	if (!empty($stats_ms['isIndexing'])) {
+		fwrite(STDERR, "\n  \033[33mL'index {$index_ms} est en cours d'indexation : la comparaison serait fausse.\033[0m\n"
+			. "  Attendre la fin de la réindexation, puis relancer.\n\n");
+		exit(3);
+	}
+} catch (\Throwable $e) {
+	fwrite(STDERR, "  (état de l'index non vérifiable : " . $e->getMessage() . ")\n");
+}
 
 $reference   = caGetBrowseInstance($table);
 $facettes    = $reference->getInfoForFacets();
@@ -241,6 +347,23 @@ $comparer = function (string $facette, array $criteres, string $intitule)
 		}
 	}
 
+	// Même poste des deux côtés, mais le socle l'a rendu sans identifiant : il apparaît chez lui
+	// sous son libellé et chez nous sous son value_id. Ce n'est pas une divergence de contenu.
+	if (($info['type'] ?? null) === 'attribute') {
+		foreach ($absents as $i => $libelle) {
+			$id = socle_sans_identifiant($info['element_code'] ?? null, $libelle);
+			if ($id === null) { continue; }
+			// Sans le cast : PHP a fait des clés numériques du tableau de comptes des entiers,
+			// une recherche stricte de chaîne n'y trouve rien, et le poste « en trop » reste
+			// compté comme une divergence alors que son jumeau vient d'être assumé.
+			foreach ($en_trop as $j => $trop) {
+				if ((string)$trop === (string)$id) { unset($en_trop[$j]); break; }
+			}
+			$assumes[] = sprintf('%s : valeur entourée d\'espaces, le socle ne retrouve pas son value_id (nous : %d)', $libelle, $id);
+			unset($absents[$i]);
+		}
+	}
+
 	foreach ($c_sql as $id => $n) {
 		if (!isset($c_ms[$id]) || $c_ms[$id] === $n) { continue; }
 
@@ -263,6 +386,14 @@ $comparer = function (string $facette, array $criteres, string $intitule)
 		if ($n > $c_ms[$id] && sql_surcompte($info['relationship_table'] ?? null, $info['table'] ?? null,
 				$reference->getSubjectInstance()->tableName(), $id)) {
 			$assumes[] = sprintf('%s : lié par plusieurs types de relation (SQL %d, fiches %d)', $id, $n, $c_ms[$id]);
+			continue;
+		}
+
+		// Le socle n'a gardé qu'une graphie sur plusieurs, avec son seul compte ; nous les
+		// rassemblons. Notre compte est celui des fiches que le clic rend.
+		if (($info['type'] ?? null) === 'attribute' && $c_ms[$id] > $n
+			&& ($graphies = graphies_eparpillees($info['element_code'] ?? null, $id))) {
+			$assumes[] = sprintf('%s : %d graphies que le socle éparpille (SQL %d, fiches %d)', $id, $graphies, $n, $c_ms[$id]);
 			continue;
 		}
 

@@ -81,6 +81,78 @@ class Document {
 		return $this->schema->fieldName($resolved[0], $resolved[1]);
 	}
 
+	/**
+	 * Valeurs brutes des éléments que `browse.conf` facette, pour une fiche.
+	 *
+	 * Lues en base plutôt que reprises de ce que l'indexeur transmet : celui-ci mêle aux valeurs
+	 * les variantes qu'il fabrique pour la recherche — « beton » à côté de « béton », « bois et
+	 * skai » à côté de « Bois et skaï ». Ces variantes n'existent pas dans `ca_attribute_values`,
+	 * donc pas davantage dans la facette du socle, et les laisser entrer ajouterait à la nôtre
+	 * des postes fantômes.
+	 *
+	 * Une requête par fiche, et seulement si la table sujet déclare au moins une facette de ce
+	 * type. Le résultat est mis en cache : `indexField()` est appelé bien des fois pour une même
+	 * fiche, la requête ne l'est qu'une.
+	 *
+	 * @return array [attribut => [valeurs]]
+	 */
+	public function attributeFacetFragment(int $subject_tablenum, int $subject_row_id, int $content_tablenum, int $content_row_id): array {
+		// La facette du socle groupe sur `ca_attributes.table_num = <table du browse>` : les
+		// attributs d'une table liée n'y entrent pas.
+		//
+		// Comparer les *tables* ne suffit pas, et c'est le piège : pour une relation objet-objet,
+		// la table du contenu est la table sujet, mais le row_id est celui de l'objet *lié*. Sans
+		// la seconde comparaison, on écrivait les matériaux d'un objet dans le document d'un
+		// autre — au CIPAR, une technique portée par une seule fiche en comptait quatre. Même
+		// famille que le piège des appels COUNT, qui portent la table liée et le row_id du sujet.
+		if ($content_tablenum !== $subject_tablenum || $content_row_id !== $subject_row_id) { return []; }
+		if ($subject_row_id <= 0) { return []; }
+
+		$table_name = \Datamodel::getTableName($subject_tablenum);
+		if (!$table_name) { return []; }
+
+		$codes = $this->schema->attributeFacetElements($table_name);
+		if (!sizeof($codes)) { return []; }
+
+		$cle = $subject_tablenum . ':' . $content_row_id;
+		if (isset(self::$attr_facet_cache[$cle])) { return self::$attr_facet_cache[$cle]; }
+
+		$out = [];
+		try {
+			$qr = $this->db()->query("
+				SELECT e.element_code, v.value_longtext1
+				FROM ca_attribute_values v
+				INNER JOIN ca_attributes a ON a.attribute_id = v.attribute_id
+				INNER JOIN ca_metadata_elements e ON e.element_id = v.element_id
+				WHERE a.table_num = ? AND a.row_id = ? AND e.element_code IN (?)
+			", [$subject_tablenum, $content_row_id, $codes]);
+
+			while ($qr->nextRow()) {
+				$valeur = trim((string)$qr->get('value_longtext1'));
+				if (!strlen($valeur)) { continue; }
+				$attribut = $this->schema->attributeFacetAttribute((string)$qr->get('element_code'));
+				// La clé, non la graphie : une fiche portant « Béton » et « beton » ne doit
+				// compter qu'une fois, comme dans le COUNT(DISTINCT row_id) du socle, dont le
+				// GROUP BY passe par une collation insensible à la casse et aux accents. Le
+				// libellé à afficher se retrouve en base à la lecture.
+				$out[$attribut][] = $this->schema->valueKey($valeur);
+			}
+			foreach ($out as $attribut => $valeurs) { $out[$attribut] = array_values(array_unique($valeurs)); }
+		} catch (\Exception $e) {
+			// Une facette manquante vaut mieux qu'une indexation interrompue : le pont s'en
+			// apercevra et rendra la main au SQL.
+			return [];
+		}
+
+		// Le cache ne sert qu'à la fiche en cours ; on le vide dès qu'on change de fiche, sinon
+		// une réindexation complète le ferait enfler jusqu'à la mémoire de la machine.
+		if (sizeof(self::$attr_facet_cache) > 4) { self::$attr_facet_cache = []; }
+		return self::$attr_facet_cache[$cle] = $out;
+	}
+
+	/** @var array cache court des valeurs de facette, par fiche en cours d'indexation */
+	private static $attr_facet_cache = [];
+
 	# -------------------------------------------------------
 	# Tranches de dates
 	# -------------------------------------------------------
@@ -147,6 +219,13 @@ class Document {
 			$debut = $bornes['start'] ?? null;
 			$fin   = $bornes['end'] ?? null;
 			if (!$debut || !$fin) { return []; }
+
+			// Au-delà de l'horizon admis, la fiche perd ses tranches pour cette date.
+			//
+			// Borner l'intervalle au lieu de le rejeter a été essayé, et mesuré faux : sur le
+			// fonds CIPAR, l'objet daté « 1851 - 19000 » se mettait alors à peupler chaque année
+			// de 1851 à 2076, dont 54 que le SQL du socle ne connaît pas — le socle, lui, ne
+			// compte cet objet nulle part. Le rejet est donc bien ce que fait le socle.
 			if ((int)$fin > $limite) { return []; }
 
 			$normalisees = self::$tep->normalizeDateRange($debut, $fin, $normalisation);

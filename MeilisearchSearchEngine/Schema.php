@@ -57,6 +57,22 @@ class Schema {
 	const FACET_DATE = 'facet_date__';
 
 	/**
+	 * Préfixe des valeurs d'attribut à facetter : `facet_attr__materiau` porte les valeurs
+	 * telles qu'elles sont en base, et rien d'autre.
+	 *
+	 * L'attribut texte ordinaire ne pouvait pas servir. Il porte bien les valeurs, mais aussi
+	 * les variantes que l'indexeur fabrique pour la recherche : au CIPAR, « béton » y voisine
+	 * avec « beton », « Bois et skaï » avec « bois et skai ». Ces fantômes s'ajoutent à la
+	 * facette comme autant de postes que le SQL n'a pas, et faussent les comptes de ceux qu'il a.
+	 * Chercher et naviguer demandent deux matières différentes — c'est déjà la raison d'être de
+	 * FACET pour les enregistrements liés.
+	 *
+	 * Seuls les éléments qu'une facette `attribute` de browse.conf désigne sont écrits : rien ne
+	 * justifie de doubler dans l'index des attributs que personne ne facette.
+	 */
+	const FACET_ATTR = 'facet_attr__';
+
+	/**
 	 * Tables primaires dont les enregistrements liés sont rangés en facettes. La liste est
 	 * fermée : tout ce qui n'y figure pas (tables de labels, de relations…) passe par
 	 * l'indexation texte ordinaire.
@@ -155,6 +171,9 @@ class Schema {
 				$attributes[] = $this->dateFacetAttribute($code, $normalisation);
 			}
 		}
+		foreach ($this->attributeFacetElements($subject_table) as $code) {
+			$attributes[] = $this->attributeFacetAttribute($code);
+		}
 		return array_values(array_unique($attributes));
 	}
 
@@ -163,6 +182,100 @@ class Schema {
 	 */
 	public function dateFacetAttribute(string $element_code, string $normalisation): string {
 		return self::FACET_DATE . $this->sanitize($element_code) . '__' . $this->sanitize($normalisation);
+	}
+
+	/**
+	 * Attribut portant les valeurs d'un élément à facetter.
+	 */
+	public function attributeFacetAttribute(string $element_code): string {
+		return self::FACET_ATTR . $this->sanitize($element_code);
+	}
+
+	/**
+	 * La clé sous laquelle deux graphies d'une même valeur n'en font qu'une.
+	 *
+	 * Elle imite `utf8mb4_general_ci`, la collation sous laquelle le socle groupe : casse
+	 * ignorée, diacritiques retirés. Vérifié sur la base — elle y tient pour égaux « béton » et
+	 * « beton », « skaï » et « skai », « chêne » et « chene ».
+	 *
+	 * C'est cette clé, et non la graphie, qui est écrite dans l'index. Sans quoi une fiche
+	 * portant deux graphies du même groupe compterait deux fois dans la facette, là où le
+	 * `COUNT(DISTINCT row_id)` du socle ne la compte qu'une. Le libellé à afficher se retrouve
+	 * ensuite en base, à la lecture.
+	 */
+	public function valueKey(string $valeur): string {
+		$valeur = trim($valeur);
+
+		// `caRemoveAccents()` d'abord : c'est la translittération du socle, avec sa table
+		// explicite. S'aligner sur elle vaut mieux qu'une décomposition Unicode à nous — deux
+		// façons de retirer les accents finiraient par diverger sur un caractère de bord.
+		if (function_exists('caRemoveAccents')) {
+			$valeur = (string)caRemoveAccents($valeur);
+		} elseif (class_exists('\Normalizer')) {
+			$decompose = \Normalizer::normalize($valeur, \Normalizer::FORM_D);
+			if (is_string($decompose)) { $valeur = preg_replace('!\p{Mn}+!u', '', $decompose); }
+		}
+		return function_exists('mb_strtolower') ? mb_strtolower($valeur, 'UTF-8') : strtolower($valeur);
+	}
+
+	/**
+	 * Éléments qu'une facette `attribute` de `browse.conf` demande de compter.
+	 *
+	 * La liste sort de la configuration du client et d'elle seule : un élément que personne ne
+	 * facette n'a aucune raison d'être doublé dans l'index. Les facettes que le pont ne saurait
+	 * de toute façon pas rendre sont écartées d'emblée, pour la même raison qu'aux dates —
+	 * inutile de payer à l'indexation ce qui repartira au SQL.
+	 *
+	 * @return array codes d'élément
+	 */
+	public function attributeFacetElements(string $subject_table): array {
+		static $cache = [];
+		if (isset($cache[$subject_table])) { return $cache[$subject_table]; }
+
+		$codes = [];
+		foreach ($this->facetsOf($subject_table) as $facet) {
+			if (($facet['type'] ?? null) !== 'attribute') { continue; }
+			if (!empty($facet['relative_to']) || !empty($facet['filter'])) { continue; }
+			if (empty($facet['element_code'])) { continue; }
+
+			$parts   = explode('.', (string)$facet['element_code']);
+			$codes[] = (string)array_pop($parts);
+		}
+		$codes = array_values(array_unique($codes));
+		if (!sizeof($codes) || !class_exists('\Db')) { return $cache[$subject_table] = $codes; }
+
+		// Ne garder que les éléments à valeur textuelle : ce sont les seuls que le pont sache
+		// rendre (Facets::facetElement). Une liste se compte sur des identifiants d'item et
+		// porte une hiérarchie à déplier ; un élément adossé à une table relève d'authority.
+		// Les écarter ici plutôt qu'à la lecture évite de doubler dans l'index des valeurs dont
+		// la facette repartira de toute façon au SQL.
+		try {
+			$qr = (new \Db())->query(
+				"SELECT element_code FROM ca_metadata_elements WHERE element_code IN (?) AND datatype = 1", [$codes]
+			);
+			$textuels = [];
+			while ($qr->nextRow()) { $textuels[] = (string)$qr->get('element_code'); }
+			$codes = array_values(array_intersect($codes, $textuels));
+		} catch (\Exception $e) {
+			// Base injoignable au moment où l'on prépare l'index : mieux vaut tout écrire que
+			// rien, la facette triera à la lecture.
+		}
+		return $cache[$subject_table] = $codes;
+	}
+
+	/**
+	 * Les facettes déclarées pour une table dans `browse.conf`, ou un tableau vide.
+	 */
+	private function facetsOf(string $subject_table): array {
+		if (!class_exists('\Configuration')) { return []; }
+		try {
+			$config   = \Configuration::load(__CA_CONF_DIR__ . '/browse.conf');
+			$settings = $config ? $config->getAssoc($subject_table) : null;
+		} catch (\Exception $e) {
+			return [];
+		}
+		if (!is_array($settings) || !is_array($settings['facets'] ?? null)) { return []; }
+		return array_filter($settings['facets'], 'is_array');
 	}
 
 	/**
@@ -263,6 +376,10 @@ class Schema {
 						$fields[] = (string)array_pop($parts);
 					}
 					break;
+
+				// `attribute` n'est pas ici : ses valeurs vont dans un attribut à part
+				// (FACET_ATTR), voir attributeFacetElements(). L'attribut texte ordinaire
+				// n'a donc pas à devenir filtrable pour autant.
 			}
 		}
 

@@ -96,7 +96,7 @@ class Facets {
 
 		$type = $facet_info['type'] ?? null;
 		if ($type === null)  { return $this->decliner('facette virtuelle, sans contenu'); }
-		if (!in_array($type, ['fieldList', 'has', 'authority', 'field', 'normalizedDates'], true)) {
+		if (!in_array($type, ['fieldList', 'has', 'authority', 'field', 'normalizedDates', 'attribute'], true)) {
 			return $this->decliner("type « {$type} » non traduit");
 		}
 		if ($type === 'normalizedDates') {
@@ -157,6 +157,8 @@ class Facets {
 					return $this->hasFacet($browse, $index, $t_subject, $facet_name, $facet_info, $options, $q, $filter_clauses);
 				case 'authority':
 					return $this->authorityFacet($browse, $index, $t_subject, $facet_name, $facet_info, $options, $q, $filter_clauses);
+				case 'attribute':
+					return $this->attributeFacet($browse, $index, $t_subject, $facet_name, $facet_info, $options, $q, $filter_clauses);
 			}
 		} catch (ClientException $e) {
 			// Moteur en panne : le browse doit rester utilisable, le SQL prend le relais.
@@ -225,6 +227,9 @@ class Facets {
 					break;
 				case 'authority':
 					$clause = $this->authorityCriterion($subject_table, $info, $values, $fields);
+					break;
+				case 'attribute':
+					$clause = $this->attributeCriterion($subject_table, $info, $values, $fields);
 					break;
 				default:
 					return $this->decliner("critère de type « " . ($info['type'] ?? '?') . " » non traduit");
@@ -433,6 +438,61 @@ class Facets {
 		return '(' . join(' AND ', $per_value) . ')';
 	}
 
+	/**
+	 * Critère attribute : le browse le pose sous la forme de l'identifiant du poste, c'est-à-dire
+	 * le `value_id` rendu par la facette. L'index, lui, ne porte que la valeur — on refait donc
+	 * le chemin inverse en base, exactement comme le socle qui appelle `getValuesFor()`.
+	 *
+	 * Un critère dont la valeur ne se retrouve pas décline plutôt que de filtrer à côté : mieux
+	 * vaut le SQL du socle qu'un browse silencieusement vide.
+	 */
+	private function attributeCriterion(string $subject_table, array $info, array $values, array $fields): ?string {
+		$element = $this->facetElement($info);
+		if ($element === null) { return null; }
+
+		$attr = $this->schema->attributeFacetAttribute($element['code']);
+		if (!in_array($attr, $fields, true)) { return null; }
+
+		$par_critere = [];
+		foreach ($values as $value) {
+			// Le socle défait l'échappement que la facette a posé pour que la valeur voyage
+			// dans une URL de browse.
+			$value = str_replace('&#47;', '/', urldecode((string)$value));
+			if (!strlen($value)) { return null; }
+
+			$cle = $this->cleDuCritere($element['element_id'], $value);
+			if ($cle === null) { return null; }
+
+			$par_critere[] = $attr . ' = ' . $this->quote($cle);
+		}
+		if (!sizeof($par_critere)) { return null; }
+
+		// Plusieurs valeurs d'un même critère se cumulent comme pour les autres types : le socle
+		// exige chacune d'elles, sauf en facette « multiple » où elles s'unissent.
+		$liaison = !empty($info['multiple']) ? ' OR ' : ' AND ';
+		return '(' . join($liaison, $par_critere) . ')';
+	}
+
+	/**
+	 * La clé d'index correspondant à un critère. Le browse le pose sous la forme du `value_id`
+	 * rendu par la facette, parfois sous celle de la valeur en clair ; l'index, lui, ne connaît
+	 * que la clé normalisée.
+	 *
+	 * Rend null si la valeur ne se retrouve pas : mieux vaut le SQL du socle qu'un browse
+	 * silencieusement vide.
+	 */
+	private function cleDuCritere(int $element_id, string $value): ?string {
+		if (is_numeric($value)) {
+			$qr = $this->db->query(
+				"SELECT value_longtext1 FROM ca_attribute_values WHERE value_id = ?", [(int)$value]
+			);
+			$value = $qr->nextRow() ? trim((string)$qr->get('value_longtext1')) : '';
+			if (!strlen($value)) { return null; }
+		}
+		$cle = $this->schema->valueKey($value);
+		return strlen($cle) ? $cle : null;
+	}
+
 	# -------------------------------------------------------
 	# Calcul des facettes
 	# -------------------------------------------------------
@@ -577,6 +637,156 @@ class Facets {
 		}
 		return $valeurs;
 	}
+
+	/**
+	 * Facette attribute : la distribution des valeurs d'un élément de métadonnée.
+	 *
+	 * C'est le type que les profils métier emploient le plus : au CIPAR, « matériau », « technique »
+	 * et « objet présent ».
+	 *
+	 * La distribution se prend sur `facet_attr__<code>` et non sur l'attribut texte du même nom.
+	 * L'attribut texte porte bien les valeurs, mais aussi les variantes que l'indexeur fabrique
+	 * pour la recherche — « beton » à côté de « béton » — qui ajouteraient à la facette des
+	 * postes que le SQL n'a pas. Voir Schema::FACET_ATTR.
+	 *
+	 * Le socle indexe son tableau de postes par la valeur en minuscules et le trie sur cette
+	 * clé. On reproduit, y compris ce que ce regroupement emporte : deux graphies ne différant
+	 * que par la casse s'écrasent au lieu de se cumuler. Cumuler donnerait des comptes plus
+	 * justes mais différents des siens, et l'écart se lirait comme une divergence.
+	 *
+	 * L'identifiant d'un poste est le `value_id` que le socle va chercher en base : il voyage
+	 * dans l'URL du browse, il doit être le même des deux côtés. Une requête suffit pour toute
+	 * la distribution, là où le socle en fait une par valeur.
+	 *
+	 * Seul l'élément à valeur textuelle est traduit. Une liste se compte sur des identifiants
+	 * d'item et porte une hiérarchie à déplier ; les types adossés à une table liée relèvent
+	 * d'authority. Les uns comme les autres déclinent.
+	 */
+	private function attributeFacet($browse, string $index, $t_subject, string $facet_name, array $facet_info, array $options, string $q, array $clauses) {
+		$element = $this->facetElement($facet_info);
+		if ($element === null) { return null; }   // facetElement a nommé sa raison
+
+		$attr = $this->schema->attributeFacetAttribute($element['code']);
+		if (!$this->engine->isFilterable($index, $attr)) {
+			// Attribut jamais déclaré filtrable : le moteur refuserait la distribution. Au SQL,
+			// sans bruit — c'est le cas d'un index construit avant que la facette n'existe.
+			$this->raison = "« {$attr} » non déclaré filtrable — réindexer";
+			return null;
+		}
+
+		$distribution = $this->distribution($index, $attr, $q, $clauses);
+		if ($distribution === null) { return null; }
+
+		$criteria = $browse->getCriteria($facet_name);
+		if (!is_array($criteria)) { $criteria = []; }
+
+		// L'index ne porte que des clés — casse et accents ôtés, comme le fait la collation sous
+		// laquelle le socle groupe. La distribution est donc déjà celle de ses postes ; il ne
+		// reste qu'à leur rendre leur libellé et leur identifiant, que la base seule connaît.
+		$groupes = $this->valueGroups($element['element_id']);
+
+		$valeurs = [];
+		foreach ($distribution as $cle => $compte) {
+			$cle = trim((string)$cle);
+			if (!strlen($cle)) { continue; }                 // le socle écarte les vides
+
+			// Clé que la base ne porte pas : même silence que le SQL, qui ne compte que ce
+			// qu'il lit dans ca_attribute_values.
+			if (!isset($groupes[$cle])) { continue; }
+
+			$id = (string)$groupes[$cle]['id'];
+			if (isset($criteria[$id])) { continue; }         // déjà en critère : ne pas re-proposer
+
+			$valeurs[$cle] = [
+				'id'            => $groupes[$cle]['id'],
+				'label'         => $groupes[$cle]['label'],
+				'content_count' => (int)$compte,
+			];
+		}
+
+		if (!empty($options['checkAvailabilityOnly'])) {
+			// Même règle que le SQL : une facette à valeur unique ne discrimine rien.
+			return sizeof($valeurs) > 1;
+		}
+		if (!sizeof($valeurs)) { return []; }
+		ksort($valeurs);
+		return $valeurs;
+	}
+
+	/**
+	 * L'élément visé par une facette attribute, si le pont sait la rendre. Rend null en ayant
+	 * nommé sa raison — les options écartées ici sont celles qui changent la population comptée
+	 * ou l'identité des postes, et qu'on ne saurait honorer sans risquer des comptes faux.
+	 */
+	private function facetElement(array $facet_info): ?array {
+		$element_code = (string)($facet_info['element_code'] ?? '');
+		if (!strlen($element_code)) { return $this->decliner('facette attribute sans element_code'); }
+
+		foreach (['filter', 'single_value', 'suppress', 'exclude_values', 'restrict_to_types', 'relabel'] as $cle) {
+			if (!empty($facet_info[$cle])) { return $this->decliner("facette attribute porte « {$cle} »"); }
+		}
+
+		$parts = explode('.', $element_code);
+		$code  = (string)array_pop($parts);
+
+		$element = $this->element($code);
+		if ($element === null) { return $this->decliner("élément « {$code} » inconnu"); }
+		if ($element['datatype'] !== 1) {
+			return $this->decliner("élément « {$code} » de type " . $element['datatype'] . " non traduit");
+		}
+		return $element + ['code' => $code];
+	}
+
+	/** @var array cache des éléments de métadonnée, par code */
+	private static $element_cache = [];
+
+	/**
+	 * Identifiant et type d'un élément de métadonnée, par son code.
+	 */
+	private function element(string $code): ?array {
+		if (!array_key_exists($code, self::$element_cache)) {
+			$qr = $this->db->query(
+				"SELECT element_id, datatype, list_id FROM ca_metadata_elements WHERE element_code = ?", [$code]
+			);
+			self::$element_cache[$code] = $qr->nextRow()
+				? ['element_id' => (int)$qr->get('element_id'), 'datatype' => (int)$qr->get('datatype'), 'list_id' => $qr->get('list_id')]
+				: null;
+		}
+		return self::$element_cache[$code];
+	}
+
+	/**
+	 * Les groupes de valeurs d'un élément, tels que le socle les obtient : une seule requête,
+	 * dont le `GROUP BY` passe par la collation de la base et fait donc exactement le
+	 * rapprochement que fait sa facette.
+	 *
+	 * L'identifiant retenu est `MIN(value_id)`. Le socle appelle `getValueIDFor()`, dont le
+	 * `LIMIT 1` sans ordre rend en pratique la première ligne servie par l'index, c'est-à-dire
+	 * la plus petite. Cet identifiant voyage dans l'URL du browse : il doit correspondre.
+	 *
+	 * @return array [clé normalisée => ['id' => int, 'label' => string]]
+	 */
+	private function valueGroups(int $element_id): array {
+		if (isset(self::$value_group_cache[$element_id])) { return self::$value_group_cache[$element_id]; }
+
+		$out = [];
+		$qr = $this->db->query(
+			"SELECT MIN(value_id) AS value_id, MIN(value_longtext1) AS valeur
+			 FROM ca_attribute_values
+			 WHERE element_id = ? AND value_longtext1 IS NOT NULL AND value_longtext1 <> ''
+			 GROUP BY value_longtext1", [$element_id]
+		);
+		while ($qr->nextRow()) {
+			$valeur = trim((string)$qr->get('valeur'));
+			if (!strlen($valeur)) { continue; }
+			$out[$this->schema->valueKey($valeur)] = ['id' => (int)$qr->get('value_id'), 'label' => $valeur];
+		}
+		return self::$value_group_cache[$element_id] = $out;
+	}
+
+	/** @var array cache des groupes de valeurs, par élément */
+	private static $value_group_cache = [];
+
 
 	/**
 	 * Facette normalizedDates : la distribution des tranches posées à l'indexation.

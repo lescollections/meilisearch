@@ -51,8 +51,12 @@ class Query {
 	/** @var array constructions rencontrées que Meilisearch ne sait pas rendre */
 	private $unsupported = [];
 
-	public function __construct(Schema $schema, string $search_expression, $rewritten_query) {
-		$this->schema = $schema;
+	/** @var string|null table sujet, pour rattacher un champ tapé sans la sienne */
+	private $subject_table = null;
+
+	public function __construct(Schema $schema, string $search_expression, $rewritten_query, ?string $subject_table = null) {
+		$this->schema        = $schema;
+		$this->subject_table = ($subject_table !== null && $subject_table !== '') ? $subject_table : null;
 
 		if ($rewritten_query !== null) {
 			$this->plan = $this->nodeFrom($rewritten_query);
@@ -309,9 +313,13 @@ class Query {
 			'field'  => $this->fieldToAttribute($field),
 			'text'   => $text,
 			'phrase' => $phrase,
-			// Un identifiant se cherche exactement : sans cela, Meilisearch complète le dernier
-			// mot en préfixe et « CLE.1928.8 » ramène aussi « CLE.1928.856 ».
-			'exact'  => !$wildcard && ($this->isIdentifierField($field) || $this->looksLikeIdentifier($text)),
+			// Nommer un champ, c'est demander cette valeur — pas ses préfixes. Sans cela
+			// Meilisearch complète le dernier mot et la valeur ne restreint plus rien :
+			// `ca_objects.parent_id:6` rendait les 8 443 fiches dont le parent commence par 6,
+			// au lieu des 26 dont il vaut 6, au chiffre près ce que rend `LIKE '6%'`. Même
+			// raison pour un identifiant en recherche libre, où « CLE.1928.8 » ramenait aussi
+			// « CLE.1928.856 ». Une troncature explicite reste une demande de préfixe.
+			'exact'  => !$wildcard && ($this->isFieldScoped($field) || $this->looksLikeIdentifier($text)),
 			'op'     => $op,
 		];
 
@@ -320,18 +328,14 @@ class Query {
 	}
 
 	/**
-	 * Le champ visé est-il le numéro d'inventaire de sa table ?
+	 * Le terme vise-t-il un champ nommé, par opposition à la recherche libre ? Ce seul critère
+	 * a remplacé le test « ce champ est-il le numéro d'inventaire de sa table », qu'il englobe :
+	 * un numéro d'inventaire n'est qu'un cas particulier de champ dont la valeur doit
+	 * correspondre, et rien ne justifiait que les autres champs, eux, soient élargis en préfixe.
 	 */
-	private function isIdentifierField(string $field): bool {
-		$field = trim(str_replace('\\/', '/', $field));
-		if ($field === '') { return false; }
-
-		$parts = preg_split('![/|]+!', $field);
-		$bits  = explode('.', $parts[0]);
-		if (sizeof($bits) < 2) { return false; }
-
-		$t = \Datamodel::getInstanceByTableName($bits[0], true);
-		return ($t && $t->getProperty('ID_NUMBERING_ID_FIELD') === $bits[1]);
+	private function isFieldScoped(string $field): bool {
+		$field = trim($field);
+		return ($field !== '' && $field !== '_fulltext');
 	}
 
 	/**
@@ -352,9 +356,20 @@ class Query {
 		$field = trim($field);
 		if ($field === '' || $field === '_fulltext') { return null; }
 
+		$field = str_replace('\\/', '/', $field);
+
+		// Un champ tapé sans sa table — `parent_id:6`, `code_eglise:05R1000` — vise la table
+		// sujet. Sans ce rattachement il était cherché sous son nom nu, qu'aucun document ne
+		// porte, et la recherche rendait zéro : le pire des silences, puisqu'il se lit « il n'y
+		// a rien de tel ». Au CIPAR, `parent_id:<édifice>` est la manière ordinaire de lister le
+		// mobilier d'une église ; 1 347 fiches étaient devenues introuvables.
+		if ($this->subject_table !== null && strpos(explode('|', $field)[0], '.') === false) {
+			$field = $this->subject_table . '.' . $field;
+		}
+
 		// Le type de relation éventuel (`ca_entities.idno|creator`) est conservé : c'est un
 		// attribut à part entière dans l'index (voir Document::fragment()).
-		return $this->schema->accessPointToFieldName(str_replace('\\/', '/', $field));
+		return $this->schema->accessPointToFieldName($field);
 	}
 
 	private function signToOp($sign, string $inherited_op): string {
@@ -376,12 +391,15 @@ class Query {
 		// `champ:valeur` ou `champ:"valeur avec espaces"`, sinon mots libres.
 		if (preg_match_all('!([A-Za-z0-9_./\\\\|]+):("([^"]*)"|\S+)!', $expression, $matches, PREG_SET_ORDER)) {
 			foreach ($matches as $m) {
-				$value  = isset($m[3]) && $m[3] !== '' ? $m[3] : trim($m[2], '"');
+				$value    = isset($m[3]) && $m[3] !== '' ? $m[3] : trim($m[2], '"');
+				$wildcard = (strpos($value, '*') !== false);
+				$value    = str_replace('*', '', $value);
+				if ($value === '') { $expression = str_replace($m[0], ' ', $expression); continue; }
 				$clause = [
 					'field'  => $this->fieldToAttribute($m[1]),
 					'text'   => $value,
 					'phrase' => (strpos($m[2], '"') === 0),
-					'exact'  => $this->isIdentifierField($m[1]) || $this->looksLikeIdentifier($value),
+					'exact'  => !$wildcard && ($this->isFieldScoped($m[1]) || $this->looksLikeIdentifier($value)),
 					'op'     => self::OP_AND,
 				];
 				$this->clauses[] = $clause;
