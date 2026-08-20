@@ -235,7 +235,10 @@ class WLPlugSearchEngineMeilisearch extends BaseSearchPlugin implements IWLPlugS
 		$index   = $this->schema->indexName($subject_tablenum);
 
 		try {
-			$query = new Meilisearch\Query($this->schema, $search_expression, $rewritten_query);
+			$query = new Meilisearch\Query(
+				$this->schema, $search_expression, $rewritten_query,
+				(string)\Datamodel::getTableName($subject_tablenum)
+			);
 			$this->searched_terms = $query->getSearchedTerms();
 
 			foreach ($query->getUnsupported() as $note) {
@@ -636,6 +639,16 @@ class WLPlugSearchEngineMeilisearch extends BaseSearchPlugin implements IWLPlugS
 			$fragment += $this->doc_builder->facetFragment(
 				$content_tablenum, $content_row_id, (int)$this->indexing_subject_tablenum, $options
 			);
+
+			// Et les valeurs des éléments que browse.conf facette, lues en base. Contrairement
+			// à ce qui précède, elles ne passent pas gratuitement : c'est une requête par fiche,
+			// consentie parce que les valeurs transmises par l'indexeur portent des variantes de
+			// recherche qui n'ont rien à faire dans une facette. Rien n'est lu si la table sujet
+			// ne déclare aucune facette de ce type.
+			$fragment += $this->doc_builder->attributeFacetFragment(
+				(int)$this->indexing_subject_tablenum, (int)$this->indexing_subject_row_id,
+				$content_tablenum, (int)$content_row_id
+			);
 		}
 
 		foreach ($fragment as $attribute => $values) {
@@ -976,7 +989,8 @@ class WLPlugSearchEngineMeilisearch extends BaseSearchPlugin implements IWLPlugS
 				if (isset(self::$filterable_attributes[$index][$attribute])) { continue; }
 				if (strpos($attribute, Meilisearch\Schema::FACET) === 0
 					|| strpos($attribute, Meilisearch\Schema::FACET_DIRECT) === 0
-					|| strpos($attribute, Meilisearch\Schema::FACET_DATE) === 0) {
+					|| strpos($attribute, Meilisearch\Schema::FACET_DATE) === 0
+					|| strpos($attribute, Meilisearch\Schema::FACET_ATTR) === 0) {
 					$new[$attribute] = true;
 				}
 			}

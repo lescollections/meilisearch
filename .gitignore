@@ -1,0 +1,14 @@
+# Dumps de bases clientes rapatriés pour les essais à l'échelle réelle. Ils pèsent des Go et
+# contiennent des données de production : jamais dans le dépôt.
+*.sql
+*.sql.gz
+*.sql.bz2
+*.sql.zst
+
+.DS_Store
+
+# Configurations rapatriées des instances clientes : posées dans le conteneur, pas dans le dépôt.
+dev/instances/
+
+# Sous-produits du dégraissage des dumps.
+acf-carte*.txt

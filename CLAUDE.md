@@ -27,6 +27,7 @@ Conséquences déjà identifiées, à vérifier par la mesure et non par le rais
 | [ClevelandMuseumArt/openaccess](https://github.com/ClevelandMuseumArt/openaccess) | 68 953 | chargé par `dev-seed-cma`, CSV 131 Mo via Git LFS |
 | [Rijksmuseum, CSV](https://github.com/Rijksmuseum/rijksmuseum.github.io/releases/download/1.0.0/202001-rma-csv-collection.zip) | ~800 000 | `dev-seed-rijksmuseum` écrit, **jamais exécuté** |
 | [Rijksmuseum, LIDO](https://github.com/Rijksmuseum/rijksmuseum.github.io/releases/download/1.0.0/202001-rma-lido-collection.zip) | ~800 000 | variante XML, plus riche ; pas de semeur |
+| CIPAR (base cliente, Namur) | **213 258** | base `cipar` du harnais, migrée 1.7 → 2.0 ; voir le point d'étape du 20 août |
 
 Le Rijksmuseum est la source qui permet d'atteindre l'échelle réelle. **Plafonner à 300 000, pas
 besoin des 800 000** — le semeur applique ce plafond de lui-même. Ne rien télécharger sans que
@@ -47,6 +48,227 @@ au prix d'un analyseur XML en flux.
 Le corpus CMA arrive en `access = 1` et sans images (`CA_SEED_CMA_MEDIA=1` pour les avoir).
 L'indexation de recherche est coupée pendant le chargement, pour que la réindexation se mesure
 comme une opération à part.
+
+## Point d'étape — 20 août 2026 : le fonds CIPAR, l'échelle réelle sous la main
+
+Le Centre Interdiocésain du Patrimoine et des Arts Religieux (Namur) fournit enfin ce que le
+Rijksmuseum devait apporter : **213 258 objets**, rapatriés dans le harnais, sous notre entière
+maîtrise. Le semeur Rijksmuseum n'a toujours pas tourné et n'a plus d'urgence.
+
+| | |
+|---|---|
+| base `cipar` | 213 258 objets (210 892 vivants), 279 921 représentations, 7 088 entités |
+| index | 519 206 documents, préfixe `cipar` |
+| `ca_search_log` | **807 536 recherches réelles**, 71 607 expressions distinctes, 2017 → 2026 |
+| socle d'origine | CollectiveAccess **1.7**, schéma 158, `search_engine_plugin = SqlSearch` |
+
+### Rapatrier une base cliente : ce que ça coûte vraiment
+
+Le dump complet fait **21,85 Gio**, et le catalogue n'en est qu'une petite part :
+
+| | volume | |
+|---|---|---|
+| `ca_change_log` + `_snapshots` + `_subjects` | 37,2 Go | écarté |
+| `ca_guids` | 3,9 Go — **52,6 millions de lignes** | écarté |
+| `ca_sql_search_word_index` | 2,7 Go | écarté |
+| le reste | **2,1 Go** | gardé |
+
+`dev/bin/degraisser-dump` filtre en flux, sans jamais poser le dump sur le disque, et conserve la
+structure des tables vidées : la base restaurée reste complète et tout se reconstruit sur place.
+**Restaurée en 2 min 38** une fois `ca_guids` écartée, contre plus de trente minutes avec elle —
+cette table enfle sans rapport avec le fonds et rien de la recherche ne la lit.
+
+Mieux vaut dégraisser **à la source** : `mysqldump --no-data` pour la structure de toute la base,
+puis `--no-create-info` avec les `--ignore-table` pour les données. Le transfert tombe de vingt
+mille mégaoctets à quelques centaines. `--ignore-table` accepte silencieusement une table
+absente ; c'est le dump `--no-data` d'une *liste* de tables qui échoue sur la première manquante.
+
+### Migrer 1.7 → 2.0 sans payer l'index qu'on ne veut pas
+
+`caUtils update-from-1-7` réindexe SqlSearch2 en dur à son étape 9/9, et
+`update_from_1_7ParamList()` rend `[]` : aucune option pour l'éviter. Les huit premières étapes
+existent toutes comme commandes `caUtils` autonomes — les rejouer une à une, puis réindexer avec
+`reindexer.php`, économise des heures. **49 min** ici : 11 de schéma, 6 d'attributs, 32 de
+valeurs de tri. `update-database-schema` demande une confirmation interactive (`yes y |`).
+
+### La configuration cliente s'isole par base, sans toucher au socle
+
+`Configuration.php:153` cherche, en plus de `local/<fichier>.conf`, un
+**`local/<fichier>_<__CA_APP_NAME__>.conf`**. Comme `__CA_APP_NAME__` porte déjà le nom de la
+base (piège du cache, plus bas), il suffit de poser `browse_meilisearch_cipar.conf` pour que la
+configuration du client ne s'applique qu'à lui. Vérifié : `technique_facet` n'apparaît que sous
+`cipar`. Les confs rapatriées vivent dans `dev/instances/<base>/`, hors dépôt.
+
+> **Comparer les facettes sans le `browse.conf` du client ne prouve rien** : on compare les
+> facettes du profil livré, pas celles que ses catalogueurs utilisent. Le CIPAR a trois facettes
+> `attribute` (`materiau`, `technique`, `objet_present`) que le profil par défaut n'a pas.
+
+### Le coût d'indexation suit la latence SQL, pas le nombre de fiches
+
+**519 206 documents en 11 min 13 s**, soit 445 lignes/s sur `ca_objects` (2,4 ms par fiche) —
+contre 19 lignes/s et 52 ms par fiche à comodo-preprod, à code identique. **Un facteur 22.** La
+seule différence structurelle est que la base y était distante et qu'elle est locale ici. Deux
+conséquences : l'élagage de `search_indexing.conf`, jugé marginal, devient le levier principal
+sur une instance à base distante, puisqu'il supprime des requêtes ; et **une durée de
+réindexation ne se transporte pas d'une instance à l'autre** sans connaître la topologie.
+
+### Facettes : 22 conformes, 18 au SQL, 21 assumés, 2 divergentes
+
+`entity_facet` rend **6 816 postes conformes** — la plus grosse facette d'autorité jamais
+comparée. `storage_location_facet` : 35 postes dont 7 branches hiérarchiques, conformes sur un
+fonds réel et non plus sur de la matière fabriquée. Les 21 écarts assumés sont ceux déjà connus.
+
+Les **dates normalisées fonctionnent**, y compris les cas que l'on craignait : `-1932` devient
+« 1932 av. J.-C. », une borne ouverte (`avant 1945`, `1831-`) retient la seule borne connue.
+Étendue moyenne d'une datation : **32,1 ans** ; 27 datations sur 133 414 dépassent 501 ans.
+L'énumération année par année reste donc viable, y compris sur un fonds archéologique.
+
+> **Ne pas juger une datation large de « bruit ».** 900 postes d'année sous l'an 1000 viennent de
+> datations comme `100-299` — parfaitement valides sur un sarcophage de pierre, et plus encore en
+> archéologie où les dates négatives sont ordinaires. Le socle produit exactement les mêmes.
+
+### Le `search.conf` du client explique une part des écarts de recherche
+
+    search_sql_search_do_stemming = 0
+    indexing_tokenizer_regex = ^\pL\pN\pNd/_#\@\&\-
+
+**Le tiret, la barre oblique, `_ # @ &` ne sont pas des séparateurs chez eux** : `saint-denis` est
+un seul terme dans leur index, là où Meilisearch coupe et cherche les deux mots. Les chiffres
+concordent — `saint-denis` 1 779 → 4 947, `Saint-Léger` 1 321 → 3 291. `nonSeparatorTokens` de
+Meilisearch reproduit ce découpage sans toucher au connecteur. Ils n'ont par ailleurs **aucune
+désuffixation**, donc leurs usagers attendent une recherche littérale.
+
+### Mesurer deux moteurs : quatre pièges, tous payés
+
+`tools/comparer-latence.php` oppose Meilisearch et SqlSearch2 sur la même base, la même machine
+et dans le même processus. Il a fallu quatre corrections pour qu'il dise quelque chose de vrai.
+
+- **`BaseSearch::__construct()` ignore le moteur qu'on lui passe.** `SearchBase` l'accepte en
+  second paramètre, mais `BaseSearch` — dont héritent `ObjectSearch`, `EntitySearch` et les
+  autres — ne prend aucun paramètre et appelle son parent sans rien. `new ObjectSearch(null,
+  'SqlSearch2')` rend donc une recherche sur le moteur *configuré*, sans un mot. La première
+  version de l'outil a ainsi comparé Meilisearch à lui-même et l'a trouvé, sans surprise,
+  exactement aussi rapide que son adversaire — des rapports de 0,98× à 1,00× partout, seul
+  indice. Le remède : remplacer `SearchEngine::$opo_engine` après construction, par réflexion.
+- **Le premier tir ment.** `burette` a donné 1 594 ms puis 36, 34 et 34 ms — un facteur 46 entre
+  le tir à froid et le régime. L'outil répète et ne retient que la médiane des tirs suivants.
+- **Ne jamais mesurer pendant une réindexation.** L'index est alors partiel : `chêne` a rendu
+  5 198 résultats à un moment et 11 951 dix minutes plus tard. J'ai failli conclure à un défaut
+  grave du connecteur. `comparer-latence.php` et `comparer-facettes.php` refusent désormais de
+  démarrer quand `isIndexing` est vrai. **Ce garde-fou est dans les outils, jamais dans le
+  connecteur** : pendant une réindexation qui dure une journée, les services publics doivent
+  pouvoir chercher dans ce qui est déjà indexé.
+- **Une latence ne se compare qu'à volume de résultats égal.** Les deux moteurs ne rendent pas
+  les mêmes ensembles ; rapatrier trois fois plus d'identifiants coûte trois fois plus cher. Le
+  bilan sépare les expressions dont les comptes s'accordent à 5 % près.
+
+**Le verdict, sur 20 expressions réelles.** À volume comparable, **SqlSearch2 est 5,2× plus
+rapide** (médiane 4,8 ms contre 24,8 ms ; 8,6 ms contre 38,7 ms pour mille résultats). Cela
+confirme, en plus marqué, le facteur 1,89 obtenu indirectement à l'INRAP, et donc le diagnostic
+du §9.3 du brief : le coût est dans le chemin, pas dans le moteur.
+
+**Mais le profil est inverse aux extrêmes**, et c'est ce qui compte pour un catalogueur :
+
+| | Meilisearch | SqlSearch2 |
+|---|---|---|
+| `chaises 2*` | 2,2 s | **45,1 s** |
+| `il y en a 2*` | 2,1 s | **43,4 s** |
+| total, 20 expressions | **9,4 s** | 90,4 s |
+| réindexation de 210 892 objets | **8 min** | 21 min |
+| index sur disque | **~3,0 Go** | **21,4 Go** |
+
+Vingt millisecondes de plus sur une recherche courante ne se voient pas ; quarante-cinq secondes,
+c'est une recherche qui a échoué. Les expressions que le diagnostic signalait comme lentes chez
+Meilisearch — troncature à plusieurs mots — sont précisément celles où il fait vingt fois mieux.
+
+### Deux moteurs, une même normalisation
+
+Les deux normalisent déjà les accents, chacun de son côté : `béton` et `beton` rendent le même
+nombre de résultats sous Meilisearch (232) comme sous SqlSearch2 (128). **Nettoyer le texte
+cherchable en amont ne rapprocherait donc rien** et ferait perdre l'original — la règle de
+classement `exactness` de Meilisearch distingue le mot tapé exactement du mot normalisé. C'est
+seulement pour les *facettes* qu'il faut aplatir, et là c'est indispensable (voir plus bas).
+
+### Facettes `attribute` : la matière de la recherche ne sert pas à naviguer
+
+Le CIPAR en déclare trois — `materiau`, `technique`, `objet_present` — et c'est le type que les
+profils métier emploient le plus. La traduction a demandé un attribut d'index à part,
+`facet_attr__<code>`, et trois découvertes :
+
+- **l'attribut texte ne peut pas servir.** Il porte les valeurs, mais aussi les variantes que
+  l'indexeur fabrique pour la recherche : « beton » à côté de « béton », « bois et skai » à côté
+  de « Bois et skaï ». Ces fantômes ajoutaient à la facette 126 postes que le SQL n'a pas ;
+- **la collation de la base fusionne casse *et* accents.** `utf8mb4_general_ci` tient pour égaux
+  « béton »/« beton », « skaï »/« skai », « chêne »/« chene » — vérifié. Le `GROUP BY` du socle
+  en hérite. On écrit donc dans l'index la **clé** et non la graphie, via `Schema::valueKey()`,
+  qui s'appuie sur `caRemoveAccents()` du socle plutôt que sur une décomposition Unicode à nous ;
+- **le piège du `row_id`, dans sa variante symétrique.** On savait que les appels `COUNT` portent
+  la table liée et le `row_id` du sujet. L'inverse existe : pour une relation objet-objet, la
+  table du contenu *est* la table sujet, mais le `row_id` est celui de l'objet **lié**. Comparer
+  les seules tables ne suffit donc pas, et l'on écrivait les matériaux d'un objet dans le
+  document d'un autre — une technique portée par une fiche en comptait quatre.
+
+**Résultat : `materiau_facet` (1 719 postes) et `technique_facet` (990 postes) sont conformes.**
+Le bilan du CIPAR passe de 22 conformes / 18 au SQL / 2 divergentes à **26 conformes / 10 au SQL
+/ 47 assumés / 4 divergentes**, ces quatre étant les deux facettes de dates comptées dans deux
+contextes — la même divergence d'une fiche sur 1874.
+
+Deux écarts assumés sont apparus au passage, et ils tiennent tous deux à des **espaces parasites
+dans les valeurs saisies** — plus fréquents qu'on ne croit dans un fonds réel :
+
+- **une valeur entourée d'espaces sort du socle sans identifiant.** Sa facette affiche
+  `trim(getDisplayValue())` puis redemande l'identifiant de cette valeur à `getValueIDFor()`,
+  dont le `=` SQL ignore les espaces de fin mais pas de tête. « ␣base est un socle en pierre
+  calcaire » n'est jamais retrouvée : le poste sort avec `id` à null. Nous avons l'identifiant ;
+- **le socle éparpille puis perd des graphies.** « fer forgé\n » et « Fer forgé » forment pour
+  MySQL deux groupes ; le socle en fait deux postes, puis les réduit à un en les indexant par
+  `strToLower(trim(...))` — le dernier écrasant le premier, avec son seul compte. Sur « fer
+  forgé », il affiche 6 fiches là où il y en a 19. Notre `trim()` à l'indexation les rassemble,
+  et notre compte est celui que le clic rend.
+
+> **`TRIM()` de MySQL ne retire pas les retours à la ligne**, là où `trim()` de PHP le fait. Les
+> deux critères de reconnaissance du comparateur, écrits d'abord en SQL, échouaient donc en
+> silence sur « Plâtre coulé\n ». Le regroupement se fait maintenant en PHP, avec la même
+> fonction que l'indexation. Corollaire : deux regroupements distincts ne choisissent pas le même
+> représentant dans un groupe — retrouver un poste par *appartenance* et non par identité.
+
+Coût mesuré : **une requête SQL par fiche, soit ~17 % du temps d'indexation** (478 → 397
+lignes/s). Consenti, et nul si la table sujet ne déclare aucune facette de ce type — seuls les
+éléments qu'une facette `attribute` de `browse.conf` désigne *et* que le pont sait rendre
+reçoivent un attribut.
+
+### À reprendre là (CIPAR)
+
+1. **La réindexation vide l'index avant de commencer** (`truncateIndex()`), comme le
+   `rebuild-search-index` du socle vide `ca_sql_search_word_index`. Le service part donc de zéro
+   et remonte sur toute la durée. Meilisearch écrasant les documents par clé primaire, une option
+   « sans purge » le laisserait à 100 % du début à la fin — chaque fiche remplacée au fil de
+   l'eau, avec un ménage final par filtre pour les fiches supprimées entre-temps. **Décidé le
+   20 août : la purge reste la règle, l'option est une amélioration à venir**, et elle vaut cher
+   pour les instances dont la réindexation occupe une journée ouvrée.
+2. `objet_present` (élément de type liste) décline encore : une facette `attribute` sur liste se
+   compte sur des identifiants d'item et porte une hiérarchie à déplier.
+3. La divergence d'une fiche sur `year_facet`/`decade_facet` (poste 1874, SQL 10 010 contre
+   10 009) **reste inexpliquée**. Borner l'intervalle au lieu de le rejeter a été essayé et
+   mesuré faux : l'objet daté « 1851 - 19000 » peuplait alors chaque année jusqu'à 2076, dont 54
+   que le socle ne connaît pas. Le rejet est bien ce que fait le socle ; la cause est ailleurs.
+
+### Diagnostic historique — 200 expressions réelles, fonds figé
+
+    0 identique · 35 à 5 % près · 156 plus larges · 3 plus étroites · 6 vidées · 0 en erreur
+
+Moins bon qu'à l'INRAP, mais la référence n'est pas la même : cet historique a été écrit par le
+**SqlSearch de 1.7**, pas SqlSearch2. Le fonds, lui, est figé — c'est un dump —, ce qui élimine la
+dérive qui brouillait la comparaison là-bas. Trois défauts en sortent :
+
+- **les champs qualifiés muets.** `parent_id:220749036` rendait 1 347 fiches, rend 0. **Ce n'est
+  pas un cas d'école** : c'est ainsi que le CIPAR liste le mobilier d'un édifice, par parenté.
+  Idem `code_eglise`. Il n'y a ici **aucun élagage** de `search_indexing.conf` : c'est bien une
+  différence de couverture du connecteur ;
+- **la latence des troncatures à plusieurs mots.** `chaises*` répond en 45 ms, `chaises 2*` en
+  **1 920 ms** — mêmes 1 822 résultats. Une douzaine d'expressions dépassent 1,7 s, toutes de
+  cette forme. Le coût ne suit ni le volume ni la troncature seule, mais leur combinaison ;
+- **l'élargissement**, dont le tokeniseur ci-dessus explique une bonne part.
 
 ## Point d'étape — 19 août 2026, instance INRAP comodo2026-preprod
 

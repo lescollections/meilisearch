@@ -1,0 +1,99 @@
+#!/usr/bin/perl
+# ---------------------------------------------------------------------------------------------
+# degraisser-dump — écarte d'un dump mysqldump les données que rien ne justifie de rapatrier,
+# en flux, sans jamais poser le dump entier sur le disque.
+#
+#     gzip -dc base.sql.gz | degraisser-dump --carte=carte.txt | gzip -1 > base-maigre.sql.gz
+#
+# Ce qui est écarté, ce sont les *données* : la structure de chaque table est conservée, si
+# bien que la base restaurée est complète et que tout se reconstruit sur place
+# (`caUtils rebuild-search-index`, la file d'indexation, le journal des modifications).
+#
+# Le gain n'est pas marginal. Sur la base de recette Mayenne, 5,5 Go sont tombés à 60 Mo, dont
+# 3,4 Go pour `ca_sql_search_word_index` à elle seule : l'index de recherche de SqlSearch2 pèse
+# régulièrement plus que les données qu'il indexe.
+#
+# À lancer sur l'hôte — c'est du Perl sans dépendance, et le dump n'a aucune raison de traverser
+# un montage Docker.
+#
+# Options :
+#   --exclure=a,b,c   remplace la liste par défaut
+#   --ajouter=d,e     ajoute à la liste par défaut
+#   --carte=fichier   écrit le poids des données de chaque table, la plus lourde d'abord
+#
+# La carte est écrite pour *toutes* les tables, écartées comprises : c'est elle qui dit si une
+# table imprévue pèse assez pour rejoindre la liste. Sans elle on filtre à l'aveugle.
+# ---------------------------------------------------------------------------------------------
+
+use strict;
+use warnings;
+
+# L'index de SqlSearch2, les journaux et les files d'attente. Tout se reconstruit, rien ne
+# porte de donnée de catalogage.
+#
+# `ca_search_log` n'y est délibérément PAS : il garde les expressions réellement tapées par les
+# usagers, avec leur nombre de résultats et leur temps d'exécution sous SqlSearch2. C'est la
+# seule matière qui permette de comparer un moteur à celui qu'il remplace sur de vraies requêtes
+# (`tools/diagnostiquer-recherches.php --historique`).
+#
+# `ca_guids` y est parce qu'elle enfle sans rapport avec le fonds : au CIPAR, 52,6 millions de
+# lignes et 7,2 Go d'espace pour 211 000 objets, soit davantage que tout le reste de la base
+# réuni. Elle n'associe que des identifiants pérennes à des enregistrements, CollectiveAccess la
+# repeuple à la demande, et rien de la recherche ni des facettes ne la lit.
+my @DEFAUT = qw(
+	ca_sql_search_word_index
+	ca_sql_search_words
+	ca_sql_search_ngrams
+	ca_change_log
+	ca_change_log_snapshots
+	ca_change_log_subjects
+	ca_eventlog
+	ca_task_queue
+	ca_search_indexing_queue
+	ca_user_sessions
+	ca_guids
+);
+
+my (@exclure, @ajouter, $carte);
+for my $arg (@ARGV) {
+	if    ($arg =~ /^--exclure=(.*)$/) { @exclure = split /\s*,\s*/, $1; }
+	elsif ($arg =~ /^--ajouter=(.*)$/) { @ajouter = split /\s*,\s*/, $1; }
+	elsif ($arg =~ /^--carte=(.*)$/)   { $carte   = $1; }
+	else { die "Option inconnue : $arg\n"; }
+}
+@exclure = @DEFAUT unless @exclure;
+my %saute = map { $_ => 1 } (@exclure, @ajouter);
+
+my (%octets, %lignes, @ordre);
+
+while (my $l = <STDIN>) {
+	# Le nom de table est pris sur l'INSERT lui-même, pas sur le commentaire « Dumping data for
+	# table » qui le précède : le commentaire est une convention de mysqldump, l'INSERT est la
+	# donnée. Un dump produit avec --skip-comments reste traité.
+	if (substr($l, 0, 12) eq 'INSERT INTO ' && $l =~ /^INSERT INTO `([^`]+)`/) {
+		my $t = $1;
+		push @ordre, $t unless exists $octets{$t};
+		$octets{$t} += length($l);
+		$lignes{$t}++;
+		next if $saute{$t};
+	}
+	elsif ($l =~ /^CREATE TABLE `([^`]+)`/) {
+		unless (exists $octets{$1}) { push @ordre, $1; $octets{$1} = 0; $lignes{$1} = 0; }
+	}
+	print $l;
+}
+
+if ($carte) {
+	open(my $fh, '>', $carte) or die "Carte illisible : $!\n";
+	printf $fh "%-44s %14s %10s  %s\n", 'table', 'octets', 'inserts', 'état';
+	my $garde = 0;
+	my $jete  = 0;
+	for my $t (sort { $octets{$b} <=> $octets{$a} || $a cmp $b } @ordre) {
+		my $etat = $saute{$t} ? 'ÉCARTÉE' : '';
+		$saute{$t} ? ($jete += $octets{$t}) : ($garde += $octets{$t});
+		printf $fh "%-44s %14d %10d  %s\n", $t, $octets{$t}, $lignes{$t}, $etat;
+	}
+	printf $fh "\n%d tables · gardé %.1f Mo · écarté %.1f Mo\n",
+		scalar(@ordre), $garde / 1048576, $jete / 1048576;
+	close($fh);
+}
