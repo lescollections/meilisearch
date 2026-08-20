@@ -320,6 +320,142 @@ function fabriquer_matiere_dates($plugin): array {
 
 $dates = fabriquer_matiere_dates($plugin);
 
+/**
+ * Matière pour une facette `attribute` adossée à une **liste hiérarchique**.
+ *
+ * C'est le cas qui décide de l'usage des thésaurus : un non-spécialiste qui a sous les yeux une
+ * photo ou un enregistrement sait dire « percussion », pas « djembé ». Chercher l'ancêtre doit
+ * donc ramener toute sa descendance — sans quoi le vocabulaire ne sert qu'à ceux qui savent
+ * déjà classer ce qu'ils cherchent.
+ *
+ * Aucun de nos corpus n'en porte : le CIPAR n'a qu'une liste plate (oui / non). On fabrique donc
+ * un mini-thésaurus d'organologie, une fois, idempotent.
+ */
+function fabriquer_matiere_organologie($plugin): array {
+	$db = new Db();
+
+	// Six objets, pris à l'écart de ceux qui portent les autres matières.
+	$qr = $db->query("SELECT object_id FROM ca_objects WHERE deleted = 0 ORDER BY object_id ASC LIMIT 5");
+	$objets = array_map('intval', $qr->getAllFieldValues('object_id'));
+	est_vrai(sizeof($objets) === 5, 'moins de cinq objets dans le fonds');
+
+	// La liste, et ses items : Instruments > Percussion > { Djembé, Cajón }.
+	$list_id = (int)($db->query("SELECT list_id FROM ca_lists WHERE list_code = 'test_organologie'")->getAllFieldValues('list_id')[0] ?? 0);
+	if (!$list_id) {
+		$t_list = new ca_lists();
+		$t_list->set('list_code', 'test_organologie');
+		$t_list->set('is_system_list', 1);
+		$t_list->set('is_hierarchical', 1);
+		$t_list->insert();
+		est_vrai(!$t_list->numErrors(), 'création de la liste test_organologie : ' . join('; ', $t_list->getErrors()));
+		$t_list->addLabel(['name' => 'Organologie (test)'], ca_locales::getDefaultCataloguingLocaleID(), null, true);
+		$list_id = (int)$t_list->getPrimaryKey();
+	}
+
+	$item = function (string $idno, string $nom, ?int $parent) use ($list_id, $db): int {
+		$id = (int)($db->query("SELECT item_id FROM ca_list_items WHERE list_id = ? AND idno = ?", [$list_id, $idno])->getAllFieldValues('item_id')[0] ?? 0);
+		if ($id) { return $id; }
+		$t = new ca_list_items();
+		$t->set('list_id', $list_id);
+		$t->set('idno', $idno);
+		$t->set('item_value', $idno);
+		$t->set('parent_id', $parent);
+		$t->set('is_enabled', 1);
+		$t->insert();
+		est_vrai(!$t->numErrors(), "création de l'item {$idno} : " . join('; ', $t->getErrors()));
+		$t->addLabel(['name_singular' => $nom, 'name_plural' => $nom], ca_locales::getDefaultCataloguingLocaleID(), null, true);
+		est_vrai(!$t->numErrors(), "étiquette de {$idno} : " . join('; ', $t->getErrors()));
+		return (int)$t->getPrimaryKey();
+	};
+
+	$racine     = $item('TEST-ORG-ROOT',   'Instruments (test)', null);
+	$percussion = $item('TEST-ORG-PERC',   'Percussion (test)',  $racine);
+	$djembe     = $item('TEST-ORG-DJEMBE', 'Djembé (test)',      $percussion);
+	$cajon      = $item('TEST-ORG-CAJON',  'Cajón (test)',       $percussion);
+
+	// L'élément, adossé à cette liste.
+	$element_id = (int)($db->query("SELECT element_id FROM ca_metadata_elements WHERE element_code = 'test_organologie'")->getAllFieldValues('element_id')[0] ?? 0);
+	if (!$element_id) {
+		$t = new ca_metadata_elements();
+		$t->set('element_code', 'test_organologie');
+		$t->set('datatype', __CA_ATTRIBUTE_VALUE_LIST__);
+		$t->set('list_id', $list_id);
+		$t->set('parent_id', null);
+		$t->insert();
+		est_vrai(!$t->numErrors(), "création de l'élément test_organologie : " . join('; ', $t->getErrors()));
+		$element_id = (int)$t->getPrimaryKey();
+
+		// Sans étiquette, getApplicableElementCodes() ne le voit pas — sa requête joint les
+		// libellés en INNER JOIN, et l'échec est silencieux.
+		$t->addLabel(['name' => 'Organologie (test)'], ca_locales::getDefaultCataloguingLocaleID(), null, true);
+		est_vrai(!$t->numErrors(), "étiquette de test_organologie : " . join('; ', $t->getErrors()));
+
+		$t_restriction = new ca_metadata_type_restrictions();
+		$t_restriction->set('table_num', Datamodel::getTableNum('ca_objects'));
+		$t_restriction->set('type_id', null);
+		$t_restriction->set('include_subtypes', 1);
+		$t_restriction->set('element_id', $element_id);
+		$t_restriction->set('rank', 1);
+		$t_restriction->insert();
+		est_vrai(!$t_restriction->numErrors(), 'restriction de type : ' . join('; ', $t_restriction->getErrors()));
+
+		if (method_exists('ca_metadata_elements', 'flushCache')) { ca_metadata_elements::flushCache(); }
+		if (class_exists('ExternalCache')) { ExternalCache::flush('ElementList'); ExternalCache::flush('ElementSets'); }
+	}
+
+	// Trois djembés, deux cajóns : la branche « Percussion » en couvre donc cinq.
+	$deja = (int)($db->query("SELECT COUNT(*) c FROM ca_attributes WHERE element_id = ?", [$element_id])->getAllFieldValues('c')[0] ?? 0);
+	if (!$deja) {
+		ca_metadata_elements::getElementID('test_organologie');
+		foreach ($objets as $i => $oid) {
+			$t = new ca_objects($oid);
+			$t->addAttribute(['test_organologie' => ($i < 3 ? $djembe : $cajon)], 'test_organologie');
+			$t->update();
+			est_vrai(!$t->numErrors(), "organologie sur l'objet {$oid} : " . join('; ', $t->getErrors()));
+		}
+
+		require_once(__CA_APP_DIR__ . '/plugins/Meilisearch/tools/_socle.php');
+		$indexeur   = new SearchIndexer($db);
+		$table_num  = Datamodel::getTableNum('ca_objects');
+		$field_data = donnees_de_champs($indexeur, 'ca_objects', $objets, $db);
+		foreach ($objets as $oid) { $indexeur->indexRow($table_num, $oid, $field_data[$oid] ?? [], true); }
+		$plugin->flushContentBuffer();
+	}
+
+	return ['objets' => $objets, 'element_id' => $element_id, 'list_id' => $list_id,
+		'racine' => $racine, 'percussion' => $percussion, 'djembe' => $djembe, 'cajon' => $cajon];
+}
+
+$organo = fabriquer_matiere_organologie($plugin);
+
+verifier('une facette attribute sur liste rend les mêmes postes que le SQL', function () use ($plugin) {
+	memes_facettes(facette_sql('test_organologie_facet'), facette_moteur($plugin, 'test_organologie_facet'),
+		'test_organologie_facet', true);
+});
+
+verifier('les feuilles d\'un thésaurus portent leurs comptes exacts', function () use ($plugin, $organo) {
+	$m = comptes(facette_moteur($plugin, 'test_organologie_facet'));
+	est_vrai(($m[$organo['djembe']] ?? null) === 3,
+		'djembé : attendu 3, obtenu ' . var_export($m[$organo['djembe']] ?? null, true));
+	est_vrai(($m[$organo['cajon']] ?? null) === 2,
+		'cajón : attendu 2, obtenu ' . var_export($m[$organo['cajon']] ?? null, true));
+});
+
+verifier('l\'ancêtre d\'un thésaurus couvre sa descendance', function () use ($plugin, $organo) {
+	// C'est tout l'objet de l'indexation des ancêtres : « percussion » doit valoir djembé plus
+	// cajón, faute de quoi il faut déjà savoir classer l'objet qu'on cherche à identifier.
+	$m = comptes(facette_moteur($plugin, 'test_organologie_facet'));
+	est_vrai(($m[$organo['percussion']] ?? null) === 5,
+		'percussion : attendu 5 (3 djembés + 2 cajóns), obtenu ' . var_export($m[$organo['percussion']] ?? null, true));
+});
+
+verifier('un critère posé sur l\'ancêtre rend toute sa descendance', function () use ($plugin, $organo) {
+	$criteres = ['test_organologie_facet' => [(string)$organo['percussion']]];
+	$sql = facette_sql('type_facet', $criteres);
+	$ms  = facette_moteur($plugin, 'type_facet', $criteres);
+	memes_facettes($sql, $ms, 'type_facet sous un critère de thésaurus');
+});
+
 verifier('year_facet éclate les intervalles en années, aux mêmes comptes que le SQL', function () use ($plugin) {
 	memes_facettes(facette_sql('year_facet'), facette_moteur($plugin, 'year_facet'), 'year_facet');
 });

@@ -158,15 +158,32 @@ Trois pièces, et il les faut toutes :
 
 Mesure sur 45 recherches plein texte du CIPAR, liste figée :
 
+**Les mots sont recollés par des espaces, non rangés un par un dans un tableau.** La distinction
+décide de tout : Meilisearch traite les éléments d'un tableau comme autant de valeurs séparées,
+jamais contiguës, et **toute recherche de phrase y rend zéro** — mesuré, « "chemin de croix" »
+passait de 2 243 fiches à une seule. Recollés, les mots restent voisins ; le moteur les redécoupe
+sur les espaces, ce qui est sans effet puisqu'un token n'en contient pas.
+
 | | à ±5 % de SqlSearch2 |
 |---|---|
 | texte brut | 34 sur 45 — 76 % |
-| **tokens du socle** | **42 sur 45 — 93 %** |
+| **tokens du socle** | **43 sur 45 — 96 %** |
 
 `roch` passe de 2 999 à 968 pour 965 attendus ; `Henri` et `waremme` tombent exactement juste.
-Il ne reste que trois cas, tous marqués par un caractère de tête — `#Eglise`, « ␣jauche »,
-« ␣20 ». Le coût est de **+50 % de temps d'indexation** (13 min 15 contre 8 min 50), à comparer
-aux 1 h 12 de SqlSearch2 sur le même fonds.
+Il ne reste que deux cas, marqués par un caractère de tête : `#Eglise` et « ␣jauche ».
+
+**Le mode l'emporte aussi sur les phrases**, où le texte brut se trompait d'un facteur trois à
+quatre cents :
+
+| | brut | tokens | SqlSearch2 |
+|---|---|---|---|
+| `"chemin de croix"` | 2 243 | **2 241** | 2 241 |
+| `"eglise saint-roch"` | 1 105 | **591** | 591 |
+| `"vierge à l'enfant"` | 5 | **2 132** | 2 123 |
+| `"saint joseph"` | 5 061 | **1 776** | 1 769 |
+
+Le coût est de **+50 % de temps d'indexation** (13 min 15 contre 8 min 50), à comparer aux
+1 h 12 de SqlSearch2 sur le même fonds.
 
 > **Mesurer la fidélité demande une liste d'expressions *figée*.** `ObjectSearch` écrit chaque
 > recherche dans `ca_search_log` : trois exécutions qui relisent l'historique à tour de rôle ne
@@ -336,9 +353,17 @@ identifier. Le socle fait de même en étendant son critère à la descendance
 reconnaît qu'une telle facette est hiérarchique — elle ne déclare pas de `table` dans
 `browse.conf`, c'est le type de son élément qui la désigne.
 
-> **La descendance n'est pas éprouvée sur données réelles.** La seule liste facettée du CIPAR est
-> `oui_non`, plate sous sa racine technique. Un vocabulaire à plusieurs niveaux — le thésaurus
-> organologie de la Phonothèque Historique de l'Océan Indien, par exemple — reste à trouver.
+**La descendance est éprouvée par `tests/browse-facettes.php`**, qui fabrique le thésaurus qu'aucun
+corpus ne porte : `Instruments > Percussion > { Djembé, Cajón }`, trois objets sous l'un, deux sous
+l'autre. Les feuilles portent leurs comptes exacts, l'ancêtre en compte cinq, et un critère posé
+sur lui rend toute sa descendance. Sur données *réelles*, en revanche, elle attend toujours un
+fonds : la seule liste facettée du CIPAR est plate.
+
+> **La couche locale *remplace* un bloc de configuration, elle ne le fusionne pas.** Un
+> `local/browse.conf` qui ne déclarerait qu'une facette **efface les vingt autres** — mesuré. Il
+> faut donc recopier le fichier entier, ce que fait le harnais (`dev/conf/browse-local.conf`,
+> posé sous `browse_meilisearch.conf` pour ne valoir que pour la base par défaut) comme ce qu'on
+> a fait du `browse.conf` du CIPAR.
 
 **Résultat : les trois facettes sont conformes** — `materiau` 1 719 postes, `technique` 990,
 `objet_present` 2. Le bilan du CIPAR passe de 22 conformes / 18 au SQL / 2 divergentes à
