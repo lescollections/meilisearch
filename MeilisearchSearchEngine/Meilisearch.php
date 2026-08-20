@@ -127,6 +127,25 @@ class WLPlugSearchEngineMeilisearch extends BaseSearchPlugin implements IWLPlugS
 			$content = mb_convert_encoding($content, 'UTF-8', 'UTF-8');
 		}
 		require_once(__CA_LIB_DIR__.'/Plugins/SearchEngine/SqlSearch2.php');
+
+		// SqlSearch2::tokenize() n'initialise que `whitespace_tokenizer_regex` quand elle est
+		// nulle ; celles de ponctuation et de séparation ne sont posées que par son
+		// *constructeur*. Appelée statiquement sans qu'une instance ait jamais existé — ce qui
+		// est le cas dès que Meilisearch est le moteur en service — elle découpe donc sur les
+		// espaces sans rien nettoyer : « …Saint-Roch[Ham-sur-Heure]… » garde ses crochets, là où
+		// la même chaîne perd sa ponctuation sous SqlSearch2. Les tokens dépendraient alors du
+		// moteur configuré, ce qui est l'inverse du but.
+		//
+		// Une instance, une seule fois, suffit à poser les trois expressions. À remonter en
+		// amont avec la correction de caTokenizeString().
+		static $amorce = false;
+		if (!$amorce) {
+			$amorce = true;
+			try { new WLPlugSearchEngineSqlSearch2(); } catch (\Exception $e) {
+				Meilisearch\Log::warn('Tokeniseur du socle non amorcé : ' . $e->getMessage());
+			}
+		}
+
 		return WLPlugSearchEngineSqlSearch2::tokenize($content, $for_search, $index);
 	}
 

@@ -313,13 +313,17 @@ class Query {
 			'field'  => $this->fieldToAttribute($field),
 			'text'   => $text,
 			'phrase' => $phrase,
-			// Nommer un champ, c'est demander cette valeur — pas ses préfixes. Sans cela
-			// Meilisearch complète le dernier mot et la valeur ne restreint plus rien :
-			// `ca_objects.parent_id:6` rendait les 8 443 fiches dont le parent commence par 6,
-			// au lieu des 26 dont il vaut 6, au chiffre près ce que rend `LIKE '6%'`. Même
-			// raison pour un identifiant en recherche libre, où « CLE.1928.8 » ramenait aussi
-			// « CLE.1928.856 ». Une troncature explicite reste une demande de préfixe.
-			'exact'  => !$wildcard && ($this->isFieldScoped($field) || $this->looksLikeIdentifier($text)),
+			// **Un terme sans astérisque se cherche exactement.** Meilisearch complète sinon le
+			// dernier mot en préfixe, toujours : au CIPAR, `roch` y rend exactement ce que rend
+			// `roch*`, soit 5 294 fiches contre 2 999 pour le mot seul. SqlSearch2 ne fait pas
+			// cela, et c'est lui qu'on cherche à égaler — un usager qui n'a pas tapé d'étoile
+			// n'en demande pas.
+			//
+			// Le même réglage annule la tolérance orthographique du moteur, et c'est voulu :
+			// SqlSearch2 n'en a pas davantage. `ca_objects.parent_id:6` rendait les 8 443 fiches
+			// dont le parent commence par 6 au lieu des 26 dont il vaut 6 ; « CLE.1928.8 »
+			// ramenait « CLE.1928.856 ». Une troncature explicite reste une demande de préfixe.
+			'exact'  => !$wildcard,
 			'op'     => $op,
 		];
 
@@ -358,14 +362,16 @@ class Query {
 
 		$field = str_replace('\\/', '/', $field);
 
-		// Un champ tapé sans sa table — `parent_id:6`, `code_eglise:05R1000` — vise la table
-		// sujet. Sans ce rattachement il était cherché sous son nom nu, qu'aucun document ne
-		// porte, et la recherche rendait zéro : le pire des silences, puisqu'il se lit « il n'y
-		// a rien de tel ». Au CIPAR, `parent_id:<édifice>` est la manière ordinaire de lister le
-		// mobilier d'une église ; 1 347 fiches étaient devenues introuvables.
-		if ($this->subject_table !== null && strpos(explode('|', $field)[0], '.') === false) {
-			$field = $this->subject_table . '.' . $field;
-		}
+		// **Un champ tapé sans sa table n'est rattaché à rien, et c'est voulu.** SqlSearch2 ne le
+		// résout pas davantage : `parent_id:6` et `code_eglise:05R1000` y rendent zéro, là où
+		// `ca_objects.parent_id:6` rend 26. Le rattacher à la table sujet a été essayé — il rendait
+		// bien les 26 fiches, et rétablissait au passage un usage que CollectiveAccess 1.7 servait
+		// (le CIPAR listait ainsi le mobilier d'un édifice, 1 347 fiches selon son historique).
+		//
+		// Mais l'objectif est d'égaler SqlSearch2, défauts compris : un remplacement dont on ne
+		// peut pas prédire les écarts n'inspire pas confiance, et sans confiance il ne se déploie
+		// pas là où les fonds sont gros. Cette régression-là appartient au socle, entre 1.7 et 2.0 ;
+		// c'est à lui qu'il faut la porter, pas au connecteur de la masquer pour lui seul.
 
 		// Le type de relation éventuel (`ca_entities.idno|creator`) est conservé : c'est un
 		// attribut à part entière dans l'index (voir Document::fragment()).
@@ -399,7 +405,7 @@ class Query {
 					'field'  => $this->fieldToAttribute($m[1]),
 					'text'   => $value,
 					'phrase' => (strpos($m[2], '"') === 0),
-					'exact'  => !$wildcard && ($this->isFieldScoped($m[1]) || $this->looksLikeIdentifier($value)),
+					'exact'  => !$wildcard,
 					'op'     => self::OP_AND,
 				];
 				$this->clauses[] = $clause;
@@ -416,7 +422,7 @@ class Query {
 			$word = str_replace('*', '', $word);
 			if ($word === '') { continue; }
 			$clause = ['field' => null, 'text' => $word, 'phrase' => false,
-			           'exact' => $this->looksLikeIdentifier($word), 'op' => self::OP_AND];
+			           'exact' => true, 'op' => self::OP_AND];
 			$this->clauses[] = $clause;
 			$mots[] = $clause;
 		}

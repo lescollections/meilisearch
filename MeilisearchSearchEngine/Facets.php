@@ -294,7 +294,13 @@ class Facets {
 		if (preg_match('!(^|\s)(AND|OR|NOT)(\s|$)!', $expression)) { return null; }
 		if (preg_match('!(^|\s)[-+]\S!', $expression)) { return null; }
 
-		return $expression;
+		// Chaque mot entre guillemets, comme le fait la recherche depuis qu'elle s'aligne sur
+		// SqlSearch2 (voir Query::clause) : sans cela le critère du browse chercherait par
+		// préfixe là où la recherche ne le fait plus, et la facette compterait sur un ensemble
+		// de fiches différent de celui que le browse affiche. Vu sur le harnais — `has_media`
+		// sous « oil » donnait 1 712 contre 1 703 au SQL.
+		$mots = preg_split('!\s+!u', $expression, -1, PREG_SPLIT_NO_EMPTY);
+		return join(' ', array_map(function ($mot) { return '"' . $mot . '"'; }, $mots));
 	}
 
 	/**
