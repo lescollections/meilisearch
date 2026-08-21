@@ -80,6 +80,15 @@ Et ce qu'il ne rattrapera pas : **1,82× plus lent en médiane** sur les recherc
 Structurel au moteur — nous ne lui demandons déjà que l'identifiant, et court-circuiter son
 classement par pertinence ne change rien (mesuré : 17-20 ms contre 19).
 
+### La réindexation incrémentale tient à cette échelle
+
+Vérifié sur le CIPAR : modifier l'étiquette d'un objet dépose 11 entrées dans
+`ca_search_indexing_queue`, et `caUtils process-indexing-queue` met l'index à jour — la recherche
+trouve alors le nouveau titre. **Mais 25 secondes pour ces 11 entrées** : la file n'est pas un
+mécanisme temps réel, et elle reste mono-processus par construction (verrou de fichier exclusif
+dans `LockingTrait`). Sur une instance où l'on catalogue en continu, c'est le point à surveiller —
+il appartient au socle, pas au connecteur.
+
 ### La couverture des facettes aussi est au bout
 
 Huit déclins subsistent sur quarante, et l'on sait désormais pourquoi aucun ne se traduira :
@@ -977,8 +986,15 @@ chiffres à 71 000 fiches sont ci-dessus.
 - **Les filtres de résultat sont appliqués en SQL**, pas traduits en filtres Meilisearch. Un
   filtre porte souvent sur un champ qu'on n'indexe pas, et un filtre qui ne s'applique pas en
   silence, c'est un enregistrement supprimé qui réapparaît.
-- **Panne du moteur** : à la recherche, on journalise et on rend zéro résultat ; à l'indexation,
-  on lève. Un index silencieusement incomplet est pire qu'un échec franc.
+- **Panne du moteur** : on lève, à la recherche comme à l'indexation. Seule une requête *refusée*
+  par le moteur (HTTP 400) rend zéro. C'est la convention du socle, tenue par le connecteur
+  ElasticSearch, qui n'attrape que `BadRequest400Exception` et laisse remonter tout le reste,
+  nœud injoignable compris (`ElasticSearch.php:409`).
+  **Corrigé le 21 août** : le connecteur attrapait tout et rendait zéro moteur éteint — vérifié,
+  une panne y était indiscernable d'un fonds vide. Le catalogueur lisait « il n'y a rien de tel »
+  là où il fallait lire « la recherche n'a pas eu lieu », et le journal ne rattrapait cela que
+  pour qui le surveille. SqlSearch2 n'a pas ce mode de défaillance : son index vit dans la base,
+  et si MariaDB tombe, CollectiveAccess lève.
 - **Pas de Pawtucket** pour l'instant.
 
 ## Pièges rencontrés, à ne pas repayer
