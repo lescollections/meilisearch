@@ -1,0 +1,18 @@
+No syntax errors detected in /var/www/html/app/lib/Plugins/SearchEngine/Meilisearch/Facets.php
+=== réindexation pour annuler le garde-fou fautif : 04:56:37 ===
+  ca_objects                   210892 lignes   498.4 s      423 lignes/s
+
+Terminé en 498.4 s
+
+  [90m·[0m materiau_facet                                 [90mtype « attribute » non traduit[0m
+  [90m·[0m technique_facet                                [90mtype « attribute » non traduit[0m
+  [90m·[0m objet_present_facet                            [90mtype « attribute » non traduit[0m
+  [31m✗[0m year_facet                                     comptes : 1874 (SQL 10010 ≠ moteur 10009)
+  [31m✗[0m decade_facet                                   comptes : 1870s (SQL 12499 ≠ moteur 12498)
+  [90m·[0m materiau_facet sous deaccession_facet          [90mtype « attribute » non traduit[0m
+  [90m·[0m technique_facet sous deaccession_facet         [90mtype « attribute » non traduit[0m
+  [90m·[0m objet_present_facet sous deaccession_facet     [90mtype « attribute » non traduit[0m
+  [31m✗[0m year_facet sous deaccession_facet              comptes : 1874 (SQL 10010 ≠ moteur 10009)
+  [31m✗[0m decade_facet sous deaccession_facet            comptes : 1870s (SQL 12499 ≠ moteur 12498)
+
+[exited with code 0]

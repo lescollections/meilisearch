@@ -1,0 +1,52 @@
+  expression                                     Meili     SqlS2  rapport   résultats
+  burette                                       16.4 ms     4.5 ms [33m   0.27×[0m   [33m1060 ≠ 1049[0m
+  10054*                                        23.5 ms     4.6 ms [33m   0.20×[0m   [33m1142 ≠ 977[0m
+  musée dio*                                 2200.7 ms   240.0 ms [33m   0.11×[0m   [33m1259 ≠ 1234[0m
+  Pale*                                         18.6 ms     5.5 ms [33m   0.30×[0m   [33m1106 ≠ 1105[0m
+  Tournai, Saint-Brice                          18.3 ms    92.9 ms [32m   5.06×[0m   [33m930 ≠ 927[0m
+  (850*                                       1180.8 ms     3.8 ms [33m   0.00×[0m   [33m102798 ≠ 1414[0m
+  gouvy                                         16.9 ms     6.1 ms [33m   0.36×[0m   1216
+  oui, 2 burettes*                            1498.1 ms   433.8 ms [33m   0.29×[0m   [33m1667 ≠ 1418[0m
+  Slabb*                                        30.0 ms     4.3 ms [33m   0.14×[0m   [33m1313 ≠ 1281[0m
+  waremme                                       17.3 ms     5.2 ms [33m   0.30×[0m   1225
+  Tournai, Saint-Jean-Baptiste                  34.8 ms   119.3 ms [32m   3.42×[0m   [33m1339 ≠ 1259[0m
+  une autre*                                  2018.4 ms    32.7 ms [33m   0.02×[0m   [33m6591 ≠ 998[0m
+  eglise saint antoine                          78.1 ms   350.5 ms [32m   4.49×[0m   [33m5015 ≠ 1270[0m
+  Henri                                         28.8 ms     7.0 ms [33m   0.24×[0m   [33m1336 ≠ 1003[0m
+  il y en a 2*                                3027.9 ms 100282.5 ms [32m  33.12×[0m   [33m1913 ≠ 1337[0m
+  La vierge et lenf*                           174.7 ms   326.3 ms [32m   1.87×[0m   [33m12 ≠ 1749[0m
+  lateral droit*                               371.9 ms    48.1 ms [33m   0.13×[0m   [33m1322 ≠ 1289[0m
+  Saint-Léger                                  26.9 ms     7.0 ms [33m   0.26×[0m   [33m1367 ≠ 1309[0m
+  walcourt                                      20.7 ms     5.6 ms [33m   0.27×[0m   [33m1408 ≠ 1337[0m
+  banc de communion*                            69.9 ms   799.2 ms [32m  11.44×[0m   [33m1394 ≠ 1389[0m
+  ca_objects.code_eglise:05R1000                19.2 ms     4.7 ms [33m   0.24×[0m   1345
+  Cert*                                         32.0 ms     4.9 ms [33m   0.15×[0m   [33m1376 ≠ 1391[0m
+  code_eglise:05R1000                           22.2 ms     1.7 ms [33m   0.08×[0m   [33m1345 ≠ 0[0m
+  code_eglise:05R1000 and parent_id:1214        34.8 ms     0.8 ms [33m   0.02×[0m   [33m1345 ≠ 0[0m
+  hannut                                        19.1 ms     6.3 ms [33m   0.33×[0m   1366
+  hors fabrique*                              2143.9 ms   314.7 ms [33m   0.15×[0m   [33m1414 ≠ 1409[0m
+  musée*                                       28.5 ms     5.7 ms [33m   0.20×[0m   [33m1632 ≠ 1438[0m
+  cathédrale de Tournai                        42.7 ms   942.3 ms [32m  22.07×[0m   1442
+  Orgue*                                        45.4 ms     7.0 ms [33m   0.15×[0m   [33m1448 ≠ 1085[0m
+  Statue habillée*                            297.0 ms   123.0 ms [33m   0.41×[0m   [33m1646 ≠ 1484[0m
+  Vitrail sainte*                             2151.7 ms   154.1 ms [33m   0.07×[0m   [33m6161 ≠ 1607[0m
+  statue de la vierge à l*                   2246.5 ms  2787.7 ms [32m   1.24×[0m   [33m1864 ≠ 1712[0m
+  Autel latéral g*                           1332.8 ms   352.6 ms [33m   0.26×[0m   [33m2176 ≠ 1430[0m
+  chaises 2*                                  2481.4 ms 96326.2 ms [32m  38.82×[0m   [33m1017 ≠ 1011[0m
+  chasuble 2114*                               473.4 ms   301.1 ms [33m   0.64×[0m   [33m1732 ≠ 1736[0m
+  statue vierge à le*                         819.9 ms   461.1 ms [33m   0.56×[0m   [33m1326 ≠ 1932[0m
+  il y a*                                     2514.8 ms   852.6 ms [33m   0.34×[0m   [33m1984 ≠ 1818[0m
+  (86*                                          56.4 ms     5.6 ms [33m   0.10×[0m   [33m3075 ≠ 1592[0m
+  Tournai, Sacré-Coeur                         41.0 ms   123.9 ms [32m   3.02×[0m   [33m1468 ≠ 1181[0m
+  2 pièces*                                  2391.7 ms   249.9 ms [33m   0.10×[0m   [33m3541 ≠ 1919[0m
+
+  [1mSur les 40 expression(s)[0m   médiane Meilisearch 50.9 ms · SqlSearch2 70.5 ms   ·   total 28.1 s contre 205.8 s
+  Meilisearch est plus rapide sur [1m10[0m des 40.
+
+  [1mÀ volume comparable[0m (±5 %, 17 expression(s)) — la seule mesure qui vaille :
+    médiane   Meilisearch 30.0 ms   ·   SqlSearch2 7.0 ms   ·   rapport [1m4.28×[0m
+    pour mille résultats   Meilisearch 365.5 ms   ·   SqlSearch2 4529.0 ms
+  [90m23 des 40 expressions rendent des volumes trop différents pour être moyennées.[0m
+
+
+[exited with code 0]

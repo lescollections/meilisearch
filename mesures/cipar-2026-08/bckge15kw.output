@@ -1,0 +1,12 @@
+=== début : 07:49:35 ===
+  ca_objects                   210892 lignes   439.7 s      480 lignes/s
+
+Terminé avec 1 table(s) en échec en 439.7 s
+
+  [90m·[0m materiau_facet                                 [90mindex sans attribut de facette — réindexer[0m
+  [90m·[0m technique_facet                                [90mindex sans attribut de facette — réindexer[0m
+  [90m·[0m objet_present_facet                            [90mindex sans attribut de facette — réindexer[0m
+  [32m0 conforme(s)[0m, [90m20 au SQL[0m, [90m0 assumé(s)[0m, [32m0 divergente[0m
+=== fin : 07:57:11 ===
+
+[exited with code 0]

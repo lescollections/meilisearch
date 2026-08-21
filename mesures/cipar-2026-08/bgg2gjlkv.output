@@ -1,0 +1,17 @@
+No syntax errors detected in /var/www/html/app/lib/Plugins/SearchEngine/Meilisearch/Schema.php
+No syntax errors detected in /var/www/html/app/lib/Plugins/SearchEngine/Meilisearch/Document.php
+No syntax errors detected in /var/www/html/app/lib/Plugins/SearchEngine/Meilisearch.php
+=== début : 07:23:20 ===
+  ca_objects                   210892 lignes   501.9 s      420 lignes/s
+
+Terminé en 501.9 s
+
+  [31m✗[0m materiau_facet                                 3 en trop : 1303971,2919733,34182612 — comptes : 34823015 (SQL 3 ≠ moteur 4) ; 625755 (SQL 19325 ≠ moteur 19326)
+  [31m✗[0m technique_facet                                1 absent(s) du moteur : plâtre coulé — 2 en trop : 1518057,2016023 — comptes : 1952143 (SQL 6 ≠ moteur 19) ; 1999819 (SQL 23 ≠ moteur 42) ; 2019060 (SQL 6 ≠ moteur 8)
+  [90m·[0m objet_present_facet                            [90mélément « objet_present » de type 3 non traduit[0m
+  [31m✗[0m materiau_facet sous deaccession_facet          3 en trop : 1303971,2919733,34182612 — comptes : 34823015 (SQL 3 ≠ moteur 4) ; 625755 (SQL 19325 ≠ moteur 19326)
+  [31m✗[0m technique_facet sous deaccession_facet         1 absent(s) du moteur : plâtre coulé — 2 en trop : 1518057,2016023 — comptes : 1952143 (SQL 6 ≠ moteur 19) ; 1999819 (SQL 23 ≠ moteur 42) ; 2019060 (SQL 6 ≠ moteur 8)
+  [90m·[0m objet_present_facet sous deaccession_facet     [90mélément « objet_present » de type 3 non traduit[0m
+=== fin : 07:32:43 ===
+
+[exited with code 0]

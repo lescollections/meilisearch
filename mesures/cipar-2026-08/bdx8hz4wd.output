@@ -1,0 +1,9 @@
+ meilisearch-dev-app-1 Copying /tmp/browse3.php to meilisearch-dev-app-1:/tmp/browse3.php
+ meilisearch-dev-app-1 Copied /tmp/browse3.php to meilisearch-dev-app-1:/tmp/browse3.php
+  Meilisearch  chaises 2*         1021 fiches en     2658 ms
+  Meilisearch  il y en a 2*       1778 fiches en     2649 ms
+  SqlSearch2   chaises 2*         1011 fiches en    66741 ms
+  SqlSearch2   il y en a 2*       1337 fiches en    66146 ms
+search_engine_plugin = Meilisearch
+
+[exited with code 0]

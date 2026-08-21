@@ -1,0 +1,13 @@
+=== début : 03:20:03 ===
+
+Réindexation de ca_objects sur 6 processus
+
+  ca_objects                   210892 lignes   474.1 s      445 lignes/s
+
+Terminé en 474.1 s
+
+=== fin : 03:27:57 ===
+=== attributs de date déclarés ===
+['facet_date__dates_value__decades', 'facet_date__dates_value__years']
+
+[exited with code 0]

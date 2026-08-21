@@ -1,0 +1,17 @@
+ meilisearch-dev-app-1 Copying /tmp/fid.php to meilisearch-dev-app-1:/tmp/fid.php
+ meilisearch-dev-app-1 Copied /tmp/fid.php to meilisearch-dev-app-1:/tmp/fid.php
+  sur 40 expressions réelles (les plus récentes)
+    texte brut      :  6 à ±5 %  (15 %)
+    tokens du socle :  0 à ±5 %  (0 %)
+
+  ce qui résiste en mode tokens              brut   tokens    SqlS2
+  statue*                                   24703    21210        4
+  14*                                       50173   134757      905
+  chaises                                    1017    40343     1011
+  (86*                                       3075    40609     1592
+  dimension:*                              210892    34586     2685
+  saint -                                  153432    15934     1345
+  Saint*                                   183652   210892    25731
+  _(211*                                    45968   185213    28138
+
+[exited with code 0]

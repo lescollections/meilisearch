@@ -1,0 +1,11 @@
+ meilisearch-dev-app-1 Copying /tmp/browse2.php to meilisearch-dev-app-1:/tmp/browse2.php
+ meilisearch-dev-app-1 Copied /tmp/browse2.php to meilisearch-dev-app-1:/tmp/browse2.php
+  Meilisearch  eglise       185253 fiches en    3637 ms
+  Meilisearch  vierge        10119 fiches en     299 ms
+  Meilisearch  calice        10333 fiches en     248 ms
+  SqlSearch2   eglise       177032 fiches en    1095 ms
+  SqlSearch2   vierge        10076 fiches en      86 ms
+  SqlSearch2   calice        10311 fiches en     106 ms
+search_engine_plugin = Meilisearch
+
+[exited with code 0]

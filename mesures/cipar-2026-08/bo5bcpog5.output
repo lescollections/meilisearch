@@ -1,0 +1,42 @@
+=== téléchargement terminé : 23316887943 octets (21.71 Gio) ===
+gzip: acf-2026-08-19.sql.gz: unexpected end of file
+gzip: acf-2026-08-19.sql.gz: uncompress failed
+( gzip -dc "$F" | perl dev/bin/degraisser-dump --carte=acf-carte.txt | gzip -)  111.33s user 8.30s system 111% cpu 1:47.21 total
+=== code retour du pipeline : 1 ===
+-rw-r--r--  1 gautier  staff   3.1G Aug 19 22:27 acf-maigre.sql.gz
+=== carte ===
+table                                                octets    inserts  état
+ca_change_log_snapshots                         23828013047      22964  ÉCARTÉE
+ca_change_log                                   10582277566      10233  ÉCARTÉE
+ca_guids                                         3933391972       3821  
+ca_change_log_subjects                           2807429554       2810  ÉCARTÉE
+ca_sql_search_word_index                         2691276576       2622  ÉCARTÉE
+ca_object_representations                        1457271453       1424  
+ca_attribute_values                               338721180        328  
+ca_search_log                                      84643513         82  
+ca_attributes                                      84044405         84  
+ca_objects                                         78699982         76  
+ca_eventlog                                        76151584         74  ÉCARTÉE
+ca_data_import_items                               74842791         73  
+ca_objects2                                        40683795         40  
+ca_objects3                                        28370848         28  
+ca_object_labels                                   27386058         27  
+ca_objects_x_storage_locations                     20175623         20  
+ca_object_representation_labels                    18158384         18  
+ca_acl                                             12559715         13  
+ca_objects_x_object_representations                 8284640          9  
+ca_object_representation_multifiles                 7448565          8  
+ca_objects_x_vocabulary_terms                       5484649          6  
+ca_list_items                                       3271163          4  
+ca_objects_x_entities                               2358742          3  
+ca_list_item_labels                                 1719850          2  
+ca_attribute_value_multifiles                       1201777          2  
+ca_entities                                         1172401          2  
+ca_persistent_cache                                 1033374          1  
+ca_entity_labels                                     661414          1  
+ca_download_log                                      585018          1  
+...
+
+196 tables · gardé 5945.5 Mo · écarté 38132.8 Mo
+
+[exited with code 0]
