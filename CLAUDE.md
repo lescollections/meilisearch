@@ -260,7 +260,20 @@ sur les espaces, ce qui est sans effet puisqu'un token n'en contient pas.
 | **tokens du socle** | **43 sur 45 — 96 %** |
 
 `roch` passe de 2 999 à 968 pour 965 attendus ; `Henri` et `waremme` tombent exactement juste.
-Il ne reste que deux cas, marqués par un caractère de tête : `#Eglise` et « ␣jauche ».
+
+**Les non-séparateurs sont dérivés du socle, pas figés.** Ils dépendent de
+`punctuation_tokenizer_regex` et `separator_tokenizer_regex`, que chaque client peut redéfinir :
+`Schema::nonSeparators()` sonde donc le tokeniseur avec « aa<caractère>bb » et retient ce qu'il ne
+coupe pas. Sur la configuration livrée : `# @ % $ = ~ ^ * ? > / . _ - …`. Chacun compte — le seul
+dièse faisait rendre 185 253 fiches à « #Eglise » au lieu de 7 282, et « Eglise » 185 253 au lieu
+de 179 128.
+
+**Résultat : 44 sur 45 à ±5 %, soit 98 %.** Un seul écart subsiste, et il est **inexpliqué** :
+« jauche » rend 86 fiches contre 30. Les 56 de trop portent le mot dans un numéro composite,
+`_Saint-Martin[Jauche]_1`, que le socle et nous indexons *à l'identique* — vérifié,
+« saint-martinjauche_1 » des deux côtés — et où Meilisearch le retrouve tout de même, alors que
+rien ne l'y sépare. Le mot n'apparaît nulle part ailleurs dans la fiche. 56 fiches sur 213 258 :
+noté, non poursuivi.
 
 **Le mode l'emporte aussi sur les phrases**, où le texte brut se trompait d'un facteur trois à
 quatre cents :
