@@ -1,0 +1,11 @@
+=== début : 04:41:06 ===
+Réindexation de ca_objects sur 6 processus
+
+  ca_objects                   210892 lignes   441.1 s      478 lignes/s
+
+Terminé en 441.1 s
+
+=== fin : 04:48:28 ===
+materiau/technique/objet_present filtrables : ['ca_objects__materiau', 'ca_objects__objet_present', 'ca_objects__technique']
+
+[exited with code 0]

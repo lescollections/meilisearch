@@ -1,0 +1,10 @@
+  sur 11 expressions réelles, liste figée
+    texte brut      :  8 à ±5 %  (73 %)
+    tokens du socle :  8 à ±5 %  (73 %)
+
+  ce qui résiste en mode tokens            brut   tokens    SqlS2
+  10027496*                                  67       67        1
+  chape parent_id:ca_objects.idno:"021        3        3        2
+  chasuble parent_id:ca_objects.idno:"       10       10        7
+
+[exited with code 0]

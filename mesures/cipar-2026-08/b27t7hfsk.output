@@ -1,0 +1,17 @@
+=== début : 05:08:50 ===
+
+Réindexation de ca_objects sur 4 processus
+
+  ca_objects                   210892 lignes  1255.4 s      168 lignes/s
+
+Terminé en 1255.4 s
+
+=== fin : 05:29:46 ===
+mots_indexes
+49632650
+objets_indexes
+210892
+mo
+21947
+
+[exited with code 0]

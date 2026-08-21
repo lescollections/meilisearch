@@ -1,0 +1,12 @@
+  Statue de*                                  2321.4 ms  1249.2 ms [33m   0.54×[0m   [33m22017 ≠ 21964[0m
+
+  [1mSur les 40 expression(s)[0m   médiane Meilisearch 234.9 ms · SqlSearch2 107.7 ms   ·   total 37.3 s contre 99.6 s
+  Meilisearch est plus rapide sur [1m5[0m des 40.
+
+  [1mÀ volume comparable[0m (±5 %, 32 expression(s)) — la seule mesure qui vaille :
+    médiane   Meilisearch 261.5 ms   ·   SqlSearch2 143.7 ms   ·   rapport [1m1.82×[0m
+    pour mille résultats   Meilisearch 22.7 ms   ·   SqlSearch2 68.9 ms
+  [90m8 des 40 expressions rendent des volumes trop différents pour être moyennées.[0m
+
+
+[exited with code 0]

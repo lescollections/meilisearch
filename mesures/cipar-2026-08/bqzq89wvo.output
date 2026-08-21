@@ -1,0 +1,74 @@
+=== début : 00:20:58 ===
+[1mSur le fonds entier[0m
+  [90m·[0m title_facet                                    [90mtype « label » non traduit[0m
+  [90m·[0m violation_facet                                [90mtype « violations » non traduit[0m
+  [90m·[0m transcribable_facet                            [90moption « relative_to » non traduite[0m
+  [90m·[0m has_transcriptions_facet                       [90moption « relative_to » non traduite[0m
+  [90m·[0m checkouts_facet                                [90mtype « checkouts » non traduit[0m
+  [32m✓[0m deaccession_facet                              1 poste(s) [90m(1 écart(s) assumé(s))[0m
+  [32m✓[0m has_media_facet                                2 poste(s)
+  [32m✓[0m entity_facet                                   6816 poste(s) [90m(10 écart(s) assumé(s))[0m
+  [32m✓[0m place_facet                                    0 poste(s)
+  [32m✓[0m collection_facet                               0 poste(s)
+  [32m✓[0m occurrence_facet_109                           0 poste(s)
+  [32m✓[0m storage_location_facet                         35 poste(s) [90m(7 branche(s))[0m
+  [32m✓[0m term_facet                                     138 poste(s)
+  [32m✓[0m type_facet                                     7 poste(s)
+  [32m✓[0m status_facet                                   4 poste(s)
+  [32m✓[0m access_facet                                   2 poste(s)
+  [32m✓[0m year_facet                                     0 poste(s)
+  [32m✓[0m decade_facet                                   0 poste(s)
+  [90m·[0m dupe_idno_facet                                [90mtype « dupeidno » non traduit[0m
+  [32m✓[0m submission_status_facet                        0 poste(s)
+  [90m·[0m submission_user                                [90mfacette field à gabarit non traduite[0m
+
+[1mSous un critère[0m
+[90m  critère : deaccession_facet = 0[0m
+  [90m·[0m title_facet sous deaccession_facet             [90mtype « label » non traduit[0m
+  [90m·[0m violation_facet sous deaccession_facet         [90mtype « violations » non traduit[0m
+  [90m·[0m transcribable_facet sous deaccession_facet     [90moption « relative_to » non traduite[0m
+  [90m·[0m has_transcriptions_facet sous deaccession_facet [90moption « relative_to » non traduite[0m
+  [90m·[0m checkouts_facet sous deaccession_facet         [90mtype « checkouts » non traduit[0m
+  [32m✓[0m deaccession_facet sous deaccession_facet       0 poste(s)
+  [32m✓[0m has_media_facet sous deaccession_facet         2 poste(s)
+  [32m✓[0m entity_facet sous deaccession_facet            6816 poste(s) [90m(10 écart(s) assumé(s))[0m
+  [32m✓[0m place_facet sous deaccession_facet             0 poste(s)
+  [32m✓[0m collection_facet sous deaccession_facet        0 poste(s)
+  [32m✓[0m occurrence_facet_109 sous deaccession_facet    0 poste(s)
+  [32m✓[0m storage_location_facet sous deaccession_facet  35 poste(s) [90m(7 branche(s))[0m
+  [32m✓[0m term_facet sous deaccession_facet              138 poste(s)
+  [32m✓[0m type_facet sous deaccession_facet              7 poste(s)
+  [32m✓[0m status_facet sous deaccession_facet            4 poste(s)
+  [32m✓[0m access_facet sous deaccession_facet            2 poste(s)
+  [32m✓[0m year_facet sous deaccession_facet              0 poste(s)
+  [32m✓[0m decade_facet sous deaccession_facet            0 poste(s)
+  [90m·[0m dupe_idno_facet sous deaccession_facet         [90mtype « dupeidno » non traduit[0m
+  [32m✓[0m submission_status_facet sous deaccession_facet 0 poste(s)
+  [90m·[0m submission_user sous deaccession_facet         [90mfacette field à gabarit non traduite[0m
+
+[1mPourquoi le SQL a repris la main[0m
+  [90m  4 ×[0m option « relative_to » non traduite
+  [90m  2 ×[0m type « label » non traduit
+  [90m  2 ×[0m type « violations » non traduit
+  [90m  2 ×[0m type « checkouts » non traduit
+  [90m  2 ×[0m type « dupeidno » non traduit
+  [90m  2 ×[0m facette field à gabarit non traduite
+
+[1mÉcarts assumés[0m [90m(le socle a tort, voir CLAUDE.md)[0m
+  [90m·[0m 0 : le socle ne rend aucun compte pour ce poste (nous : 210892)
+  [90m·[0m 1604 : lié par plusieurs types de relation (SQL 3, fiches 2)
+  [90m·[0m 249 : lié par plusieurs types de relation (SQL 35, fiches 34)
+  [90m·[0m 260 : lié par plusieurs types de relation (SQL 7, fiches 6)
+  [90m·[0m 354 : lié par plusieurs types de relation (SQL 15, fiches 14)
+  [90m·[0m 389 : lié par plusieurs types de relation (SQL 9, fiches 8)
+  [90m·[0m 4033 : lié par plusieurs types de relation (SQL 36, fiches 35)
+  [90m·[0m 4751 : lié par plusieurs types de relation (SQL 2, fiches 1)
+  [90m·[0m 614 : lié par plusieurs types de relation (SQL 5, fiches 4)
+  [90m·[0m 6439 : lié par plusieurs types de relation (SQL 3, fiches 2)
+  [90m·[0m … et 1 autre(s)
+
+  [32m28 conforme(s)[0m, [90m14 au SQL[0m, [90m21 assumé(s)[0m, [32m0 divergente[0m
+
+=== fin : 00:21:27 ===
+
+[exited with code 0]

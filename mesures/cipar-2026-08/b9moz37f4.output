@@ -1,0 +1,9 @@
+ meilisearch-dev-app-1 Copying /tmp/browse.php to meilisearch-dev-app-1:/tmp/browse.php
+ meilisearch-dev-app-1 Copied /tmp/browse.php to meilisearch-dev-app-1:/tmp/browse.php
+  browse                         fiches      temps   facette type_facet
+  sans critère                       0        4 ms   7 postes en 394 ms
+  un type                        203905      349 ms   0 postes en 8 ms
+  une recherche texte            185253     8845 ms   4 postes en 7 ms
+  type + recherche               178287     2232 ms   0 postes en 6 ms
+
+[exited with code 0]

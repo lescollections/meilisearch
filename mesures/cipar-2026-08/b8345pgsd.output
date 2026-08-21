@@ -1,0 +1,10 @@
+ meilisearch-dev-app-1 Copying /tmp/expr.txt to meilisearch-dev-app-1:/tmp/expr.txt
+ meilisearch-dev-app-1 Copied /tmp/expr.txt to meilisearch-dev-app-1:/tmp/expr.txt
+  sur 45 recherches plein texte, liste figée
+    texte brut      : 34 à ±5 %  (76 %)
+    tokens du socle : 43 à ±5 %  (96 %)
+
+  #Eglise                      brut  186009   tokens  185253   SqlS2    7282
+   jauche                      brut     999   tokens      86   SqlS2      30
+
+[exited with code 0]

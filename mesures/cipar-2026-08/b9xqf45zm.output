@@ -1,0 +1,16 @@
+=== début : 07:09:37 ===
+  ca_objects                   210892 lignes   531.7 s      397 lignes/s
+
+Terminé en 531.7 s
+
+  [31m✗[0m materiau_facet                                 3 absent(s) du moteur : base est un socle en pierre calcaire,encadrement en bois foncé,tissu en soie brodée de couleur rouge — 3 en trop : 1303971,2919733,34182612 — comptes : 1039938 (SQL 48 ≠ moteur 50) ; 1056132 (SQL 118 ≠ moteur 125) ; 1082384 (SQL 8 ≠ moteur 9)
+  [31m✗[0m technique_facet                                2 absent(s) du moteur : la tablette a une épaisseur de  12cm .elle est constituée de plusieurs planches assemblées dans le sens de la longueur,plâtre coulé — 2 en trop : 1518057,2016023 — comptes : 1169626 (SQL 1 ≠ moteur 2) ; 1194142 (SQL 1 ≠ moteur 4) ; 1197462 (SQL 1 ≠ moteur 5)
+  [90m·[0m objet_present_facet                            [90mélément « objet_present » de type 3 non traduit[0m
+  [31m✗[0m materiau_facet sous deaccession_facet          3 absent(s) du moteur : base est un socle en pierre calcaire,encadrement en bois foncé,tissu en soie brodée de couleur rouge — 3 en trop : 1303971,2919733,34182612 — comptes : 1039938 (SQL 48 ≠ moteur 50) ; 1056132 (SQL 118 ≠ moteur 125) ; 1082384 (SQL 8 ≠ moteur 9)
+  [31m✗[0m technique_facet sous deaccession_facet         2 absent(s) du moteur : la tablette a une épaisseur de  12cm .elle est constituée de plusieurs planches assemblées dans le sens de la longueur,plâtre coulé — 2 en trop : 1518057,2016023 — comptes : 1169626 (SQL 1 ≠ moteur 2) ; 1194142 (SQL 1 ≠ moteur 4) ; 1197462 (SQL 1 ≠ moteur 5)
+  [90m·[0m objet_present_facet sous deaccession_facet     [90mélément « objet_present » de type 3 non traduit[0m
+  [90m  2 ×[0m élément « objet_present » de type 3 non traduit
+  [32m22 conforme(s)[0m, [90m10 au SQL[0m, [90m21 assumé(s)[0m, [31m8 divergente(s)[0m
+=== fin : 07:19:17 ===
+
+[exited with code 0]

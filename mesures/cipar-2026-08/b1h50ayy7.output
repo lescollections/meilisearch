@@ -1,0 +1,37 @@
+No syntax errors detected in /var/www/html/app/plugins/Meilisearch/tools/comparer-latence.php
+=== début : 05:47:54 ===
+[90mmême base, même machine, même processus ; 3 tirs par mesure, le premier jeté[0m
+
+  expression                                     Meili     SqlS2  rapport   résultats
+  peinture murale*                             175.5 ms    31.7 ms [33m   0.18×[0m   [33m961 ≠ 923[0m
+  waremme                                       15.6 ms     4.2 ms [33m   0.27×[0m   1225
+  burette                                       34.2 ms    14.4 ms [33m   0.42×[0m   [33m2687 ≠ 2670[0m
+  chaises 2*                                  2155.3 ms 45132.9 ms [32m  20.94×[0m   [33m1822 ≠ 1509[0m
+  Saint-Brice, Tournai                          59.3 ms   138.9 ms [32m   2.34×[0m   [33m995 ≠ 927[0m
+  Tournai, Saint-Brice                          40.7 ms   116.6 ms [32m   2.87×[0m   [33m1139 ≠ 927[0m
+  Flam*                                         18.9 ms     4.6 ms [33m   0.25×[0m   [33m974 ≠ 967[0m
+  roch                                          63.3 ms     4.1 ms [33m   0.07×[0m   [33m5294 ≠ 966[0m
+  10054*                                        21.1 ms     4.1 ms [33m   0.19×[0m   [33m1142 ≠ 977[0m
+  chaises*                                      27.4 ms     5.0 ms [33m   0.18×[0m   [33m1822 ≠ 1042[0m
+  Chasuble dorée*                             362.5 ms    35.8 ms [33m   0.10×[0m   [33m2783 ≠ 1067[0m
+  saint-médard                                 17.6 ms     4.6 ms [33m   0.26×[0m   [33m984 ≠ 870[0m
+  Henri                                         34.4 ms     3.5 ms [33m   0.10×[0m   [33m2153 ≠ 1003[0m
+  il y en a é*                               2116.0 ms  1357.9 ms [33m   0.64×[0m   [33m1985 ≠ 1339[0m
+  Orgue*                                        31.6 ms     6.2 ms [33m   0.20×[0m   [33m1448 ≠ 1085[0m
+  Pale*                                         24.8 ms     4.8 ms [33m   0.19×[0m   1106
+  il y en a 2*                                2127.7 ms 43404.2 ms [32m  20.40×[0m   [33m1985 ≠ 1339[0m
+  Saint-Sébastien                              35.5 ms     5.0 ms [33m   0.14×[0m   [33m1791 ≠ 982[0m
+  Tableau sainte*                             1999.2 ms   100.0 ms [33m   0.05×[0m   [33m5033 ≠ 1046[0m
+  crèche*                                      40.1 ms     6.2 ms [33m   0.16×[0m   [33m2028 ≠ 1138[0m
+
+  [1mSur les 20 expression(s)[0m   médiane Meilisearch 37.8 ms · SqlSearch2 6.2 ms   ·   total 9.4 s contre 90.4 s
+  Meilisearch est plus rapide sur [1m4[0m des 20.
+
+  [1mÀ volume comparable[0m (±5 %, 5 expression(s)) — la seule mesure qui vaille :
+    médiane   Meilisearch 24.8 ms   ·   SqlSearch2 4.8 ms   ·   rapport [1m5.22×[0m
+    pour mille résultats   Meilisearch 38.7 ms   ·   SqlSearch2 8.6 ms
+  [90m15 des 20 expressions rendent des volumes trop différents pour être moyennées.[0m
+
+=== fin : 05:53:57 ===
+
+[exited with code 0]

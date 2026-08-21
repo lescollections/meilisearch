@@ -1,0 +1,16 @@
+=== début : 06:53:53 ===
+  ca_objects                   210892 lignes   521.4 s      405 lignes/s
+
+Terminé en 521.4 s
+
+  [31m✗[0m materiau_facet                                 101 absent(s) du moteur : 1072109,1091040,1200384,1200403 — 126 en trop : acier et paille,aggloméré,argent croix d'orée et pourtour d'oré,argent et métal doré ( laiton ) — comptes : 1039938 (SQL 48 ≠ moteur 50) ; 1051401 (SQL 4 ≠ moteur 2) ; 1056132 (SQL 118 ≠ moteur 125)
+  [31m✗[0m technique_facet                                32 absent(s) du moteur : 1092684,1456510,1552135,1927229 — 38 en trop : assemble, coulé, repoussé,assemblé, coulé,assemblé, coulé, ciselé,assemblé, coulé, martelé — comptes : 1169626 (SQL 1 ≠ moteur 2) ; 1194142 (SQL 1 ≠ moteur 4) ; 1197462 (SQL 1 ≠ moteur 5)
+  [90m·[0m objet_present_facet                            [90mélément « objet_present » de type 3 non traduit[0m
+  [31m✗[0m materiau_facet sous deaccession_facet          101 absent(s) du moteur : 1072109,1091040,1200384,1200403 — 126 en trop : acier et paille,aggloméré,argent croix d'orée et pourtour d'oré,argent et métal doré ( laiton ) — comptes : 1039938 (SQL 48 ≠ moteur 50) ; 1051401 (SQL 4 ≠ moteur 2) ; 1056132 (SQL 118 ≠ moteur 125)
+  [31m✗[0m technique_facet sous deaccession_facet         32 absent(s) du moteur : 1092684,1456510,1552135,1927229 — 38 en trop : assemble, coulé, repoussé,assemblé, coulé,assemblé, coulé, ciselé,assemblé, coulé, martelé — comptes : 1169626 (SQL 1 ≠ moteur 2) ; 1194142 (SQL 1 ≠ moteur 4) ; 1197462 (SQL 1 ≠ moteur 5)
+  [90m·[0m objet_present_facet sous deaccession_facet     [90mélément « objet_present » de type 3 non traduit[0m
+  [90m  2 ×[0m élément « objet_present » de type 3 non traduit
+  [32m20 conforme(s)[0m, [90m10 au SQL[0m, [90m21 assumé(s)[0m, [31m10 divergente(s)[0m
+=== fin : 07:03:25 ===
+
+[exited with code 0]

@@ -1,0 +1,26 @@
+=== harnais réindexé ===
+
+
+[exited with code 0]
+=== CIPAR complet en mode tokens : 14:57:51 ===
+  ca_relationship_types           187 lignes     0.3 s      659 lignes/s
+  ca_sets                         101 lignes     0.3 s      387 lignes/s
+  ca_storage_locations             36 lignes     2.3 s       16 lignes/s
+  ca_loans                         12 lignes     0.5 s       26 lignes/s
+  ca_user_groups                    8 lignes     0.3 s       31 lignes/s
+  ca_places                         1 lignes     0.3 s        4 lignes/s
+  ca_object_checkouts          vide
+  ca_tour_stops                vide
+  ca_tours                     vide
+  ca_movements                 vide
+  ca_item_tags                 vide
+  ca_item_comments             vide
+  ca_occurrences               vide
+  ca_object_lots               vide
+  ca_collections               vide
+
+Terminé en 854.0 s
+
+=== fin : 15:12:05 ===
+
+[exited with code 0]

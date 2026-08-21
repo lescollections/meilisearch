@@ -1,0 +1,17 @@
+No syntax errors detected in /var/www/html/app/lib/Plugins/SearchEngine/Meilisearch/Client.php
+=== réparation de l'index et relance : 07:58:47 ===
+  suppression : enqueued
+  ca_objects                   210892 lignes   830.2 s      254 lignes/s
+
+Terminé en 830.2 s
+
+  [32m✓[0m materiau_facet                                 1719 poste(s) [90m(5 écart(s) assumé(s))[0m
+  [32m✓[0m technique_facet                                990 poste(s) [90m(8 écart(s) assumé(s))[0m
+  [32m✓[0m objet_present_facet                            2 poste(s)
+  [32m✓[0m materiau_facet sous deaccession_facet          1719 poste(s) [90m(5 écart(s) assumé(s))[0m
+  [32m✓[0m technique_facet sous deaccession_facet         990 poste(s) [90m(8 écart(s) assumé(s))[0m
+  [32m✓[0m objet_present_facet sous deaccession_facet     2 poste(s)
+  [32m28 conforme(s)[0m, [90m8 au SQL[0m, [90m47 assumé(s)[0m, [31m4 divergente(s)[0m
+=== fin : 08:13:35 ===
+
+[exited with code 0]

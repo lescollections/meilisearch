@@ -1,0 +1,20 @@
+expressions plein texte :       50
+tournai saint-piat monument funéraire 
+03R0030 
+05R0028 
+06R0224 
+ meilisearch-dev-app-1 Copying /tmp/expr.txt to meilisearch-dev-app-1:/tmp/expr.txt
+ meilisearch-dev-app-1 Copied /tmp/expr.txt to meilisearch-dev-app-1:/tmp/expr.txt
+
+  sur 45 recherches plein texte, liste figée
+    texte brut      : 34 à ±5 %  (76 %)
+    tokens du socle : 40 à ±5 %  (89 %)
+
+  ce qui résiste en mode tokens      brut   tokens    SqlS2
+  #Eglise                          186009   185213     7282
+   jauche                             999       86       30
+  Autel majeur. IRPA                 2174        0     1993
+  Autel majeur.                      3294        0     2582
+   20                               11968     7877     5803
+
+[exited with code 0]

@@ -1,0 +1,46 @@
+=== début : 23:59:29 ===
+
+Réindexation de ca_object_representations, ca_objects, ca_list_items, ca_set_items, ca_entities, ca_users, ca_relationship_types, ca_sets, ca_storage_locations, ca_loans, ca_user_groups, ca_places, ca_object_checkouts, ca_tour_stops, ca_tours, ca_movements, ca_item_tags, ca_item_comments, ca_occurrences, ca_object_lots, ca_collections sur 6 processus
+
+  ca_object_representations    268948 lignes   159.3 s     1688 lignes/s
+  ca_objects                   210892 lignes   506.2 s      417 lignes/s
+  ca_list_items                 16863 lignes     2.3 s     7316 lignes/s
+  ca_set_items                  15073 lignes     1.2 s    12742 lignes/s
+  ca_entities                    7085 lignes     2.0 s     3494 lignes/s
+  ca_users                       2089 lignes     0.7 s     2792 lignes/s
+  ca_relationship_types           187 lignes     0.3 s      707 lignes/s
+  ca_sets                         101 lignes     0.3 s      333 lignes/s
+  ca_storage_locations             36 lignes     0.3 s      129 lignes/s
+  ca_loans                         12 lignes     0.3 s       45 lignes/s
+  ca_user_groups                    8 lignes     0.2 s       38 lignes/s
+  ca_places                         1 lignes     0.2 s        4 lignes/s
+  ca_object_checkouts          vide
+  ca_tour_stops                vide
+  ca_tours                     vide
+  ca_movements                 vide
+  ca_item_tags                 vide
+  ca_item_comments             vide
+  ca_occurrences               vide
+  ca_object_lots               vide
+  ca_collections               vide
+
+Terminé en 673.4 s
+
+=== fin : 00:10:43 ===
+=== index cipar ===
+  cipar_ca_entities                              7085
+  cipar_ca_list_items                           16863
+  cipar_ca_loans                                   12
+  cipar_ca_object_representations              268948
+  cipar_ca_objects                             210892
+  cipar_ca_places                                   1
+  cipar_ca_relationship_types                     187
+  cipar_ca_set_items                            15073
+  cipar_ca_sets                                   101
+  cipar_ca_storage_locations                       36
+  cipar_ca_user_groups                              8
+  TOTAL                                        519206
+fichier LMDB   : 5243 Mo
+pages utiles   : 3480 Mo
+
+[exited with code 0]
