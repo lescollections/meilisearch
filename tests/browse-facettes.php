@@ -28,7 +28,7 @@ verifier('le moteur configuré expose getBrowseFacetContent()', function () use 
 });
 
 verifier('le socle porte le point de délégation', function () {
-	est_vrai(property_exists('BrowseEngine', 's_facet_engine'),
+	est_vrai(property_exists('BaseBrowse', 'msearch_engine'),
 		'BrowseEngine::$s_facet_engine absent — le patch du socle n\'est pas appliqué');
 });
 
@@ -38,7 +38,9 @@ verifier('le socle porte le point de délégation', function () {
 
 /** Force ou libère la délégation dans le socle. false = SQL pur, null = re-résolution. */
 function delegation($valeur): void {
-	$p = new ReflectionProperty('BrowseEngine', 's_facet_engine');
+	// La délégation vit désormais dans BaseBrowse, que le connecteur substitue — le cœur de
+	// CollectiveAccess n'est plus patché du tout. Voir MeilisearchSearchEngine/msearch_BaseBrowse.php.
+	$p = new ReflectionProperty('BaseBrowse', 'msearch_engine');
 	$p->setAccessible(true);
 	$p->setValue(null, $valeur);
 }

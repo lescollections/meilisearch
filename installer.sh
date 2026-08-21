@@ -18,8 +18,8 @@
 #
 # Usage :
 #   ./installer.sh /var/www/…/providence                  → pose les liens, vérifie
-#   ./installer.sh /var/www/…/providence --patch-browse   → pose aussi le patch du Browse
-#   ./installer.sh /var/www/…/providence --retirer        → retire liens et patch
+#   ./installer.sh /var/www/…/providence --browse         → pose aussi la délégation du Browse
+#   ./installer.sh /var/www/…/providence --retirer        → retire tout, rétablit l'original
 #
 # Idempotent : relancer ne fait rien de plus. Le patch du Browse se reconnaît à sa présence et
 # n'est jamais appliqué deux fois.
@@ -37,7 +37,7 @@ CA="${1:-}"
 MODE="${2:-}"
 
 if [ -z "$CA" ]; then
-    rouge "Usage : $0 <racine de Providence> [--patch-browse|--retirer]"
+    rouge "Usage : $0 <racine de Providence> [--browse|--retirer]"
     exit 2
 fi
 
@@ -45,7 +45,12 @@ CA="$(cd "$CA" 2>/dev/null && pwd)" || { rouge "Introuvable : ${1}"; exit 2; }
 
 [ -f "$CA/setup.php" ] || { rouge "Ce n'est pas une racine de Providence (setup.php absent) : $CA"; exit 2; }
 
-BROWSE="$CA/app/lib/Browse/BrowseEngine.php"
+# La délégation du Browse se pose en *substituant* app/lib/Browse/BaseBrowse.php, une
+# classe-crochet de cinquante lignes que toutes les classes de browse traversent et qui ne fait
+# rien d'autre que déléguer à BrowseEngine. Le cœur de CollectiveAccess — BrowseEngine.php et ses
+# 8 516 lignes — n'est **pas** modifié : une version antérieure du connecteur y insérait ses
+# 36 lignes, invisibles à la première montée de version du socle.
+BASE_BROWSE="$CA/app/lib/Browse/BaseBrowse.php"
 LIENS=(
     "$CA/app/lib/Plugins/SearchEngine/Meilisearch.php|$DEPOT/MeilisearchSearchEngine/Meilisearch.php"
     "$CA/app/lib/Plugins/SearchEngine/Meilisearch|$DEPOT/MeilisearchSearchEngine"
@@ -61,12 +66,13 @@ if [ "$MODE" = "--retirer" ]; then
         cible="${paire%%|*}"
         if [ -L "$cible" ]; then rm -f "$cible"; info "retiré : $cible"; fi
     done
-    if grep -q 'getBrowseFacetContent' "$BROWSE" 2>/dev/null; then
-        if [ -f "$BROWSE.avant-meilisearch" ]; then
-            mv "$BROWSE.avant-meilisearch" "$BROWSE"
-            info "patch du Browse retiré (sauvegarde restaurée)"
+    if [ -L "$BASE_BROWSE" ]; then
+        rm -f "$BASE_BROWSE"
+        if [ -f "$BASE_BROWSE.avant-meilisearch" ]; then
+            mv "$BASE_BROWSE.avant-meilisearch" "$BASE_BROWSE"
+            info "délégation du Browse retirée, BaseBrowse.php d'origine rétabli"
         else
-            jaune "patch du Browse présent mais sans sauvegarde — à retirer à la main"
+            rouge "BaseBrowse.php retiré mais sans sauvegarde — le rétablir depuis le socle !"
         fi
     fi
     vert "Greffon retiré. Vérifier que search_engine_plugin ne vaut plus Meilisearch."
@@ -129,17 +135,21 @@ done
 # ----------------------------------------------------------------------
 # Le patch du Browse
 # ----------------------------------------------------------------------
-if [ "$MODE" = "--patch-browse" ]; then
+if [ "$MODE" = "--browse" ]; then
     echo
-    if grep -q 'getBrowseFacetContent' "$BROWSE"; then
-        info "patch du Browse : déjà présent"
+    if [ -L "$BASE_BROWSE" ]; then
+        info "délégation du Browse : déjà posée"
+    elif [ ! -f "$BASE_BROWSE" ]; then
+        rouge "BaseBrowse.php introuvable — socle inattendu, délégation non posée"; MANQUE=1
     else
-        # Le patch vit dans les forks du socle ; on le reproduit ici pour les instances qui ne
-        # tirent pas d'un dépôt patché. La sauvegarde permet le retour en arrière.
-        cp -n "$BROWSE" "$BROWSE.avant-meilisearch"
-        php "$DEPOT/MeilisearchAppPlugin/tools/patcher-browse.php" "$BROWSE" \
-            && vert "  patch du Browse posé (sauvegarde : $(basename "$BROWSE").avant-meilisearch)" \
-            || { rouge "patch du Browse impossible"; MANQUE=1; }
+        # L'original est conservé à côté : c'est lui que --retirer remet en place. Sans cette
+        # sauvegarde, retirer le greffon laisserait l'instance sans classe BaseBrowse du tout.
+        cp -n "$BASE_BROWSE" "$BASE_BROWSE.avant-meilisearch"
+        if ln -sfn "$DEPOT/MeilisearchSearchEngine/msearch_BaseBrowse.php" "$BASE_BROWSE"; then
+            vert "  délégation du Browse posée (sauvegarde : $(basename "$BASE_BROWSE").avant-meilisearch)"
+        else
+            rouge "délégation du Browse impossible"; MANQUE=1
+        fi
     fi
 fi
 

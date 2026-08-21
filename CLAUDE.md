@@ -49,6 +49,39 @@ Le corpus CMA arrive en `access = 1` et sans images (`CA_SEED_CMA_MEDIA=1` pour 
 L'indexation de recherche est coupée pendant le chargement, pour que la réindexation se mesure
 comme une opération à part.
 
+## Point d'étape — 21 août 2026 : le cœur de CollectiveAccess n'est plus patché
+
+**La délégation du Browse se pose désormais en substituant `app/lib/Browse/BaseBrowse.php`**, une
+classe-crochet de cinquante lignes que toutes les classes de browse traversent — `ObjectBrowse`,
+`EntityBrowse`… — et qui ne fait rien d'autre que déléguer à `BrowseEngine`. Notre version vit
+dans `MeilisearchSearchEngine/msearch_BaseBrowse.php`, posée par lien symbolique
+(`installer.sh <racine> --browse`), l'original conservé sous `BaseBrowse.php.avant-meilisearch`.
+
+Ce que cela remplace : 36 lignes insérées **dans** `BrowseEngine::getFacetContent()`, qui
+imposaient un fork du socle et un outil dédié pour les poser et les retirer. Un patch mêlé à
+8 516 lignes devient invisible à la première montée de version ; `patcher-browse.php` est
+supprimé, et les branches `feature/meilisearch-browse-facets` ne servent plus que pour la
+correction de `caTokenizeString()`, qui reste nécessaire.
+
+**Ce que la surcharge doit refaire, et ce qu'elle refuse de refaire.** Le patch s'insérait *après*
+les contrôles du socle — ACL, existence de la facette, restrictions de type et de source propres à
+la facette, accès forcé — et en héritait gratuitement. Une surcharge intercepte *avant*. On ne les
+reproduit pas : on **décline** dès que l'un d'eux s'applique, et le SQL du socle reprend la main,
+contrôles compris. Les reproduire, ce serait les dupliquer, donc les laisser diverger un jour —
+sur des contrôles d'accès, c'est inacceptable.
+
+Vérifié en retirant l'ancien patch du socle : 28 vérifications au harnais, et le fonds CIPAR
+toujours à 28 conformes / 8 au SQL / 47 assumés / 4 divergentes.
+
+> **Le mode tokens fait perdre la recherche par *composant* de numéro d'inventaire** — et c'est
+> conforme. `INDEX_AS_IDNO` ne produit que les **préfixes** hiérarchiques : « CLE.1938.388.a » est
+> indexé avec « CLE », « CLE.1938 », « CLE.1938.388 », jamais « a » ni « 388 » isolés. Chercher un
+> composant ne marchait que parce que Meilisearch découpait lui-même sur les points ; depuis qu'on
+> lui déclare « . _ - / » non-séparateurs, il ne le fait plus. **SqlSearch2 ne l'a jamais fait**
+> — vérifié sur le CIPAR : les deux moteurs rendent zéro pour un composant isolé et un pour le
+> numéro entier. `tests/recherche-simple.php` vérifiait l'ancien comportement ; il vérifie
+> désormais le contrat du socle.
+
 ## Point d'étape — 20 août 2026 : le fonds CIPAR, l'échelle réelle sous la main
 
 Le Centre Interdiocésain du Patrimoine et des Arts Religieux (Namur) fournit enfin ce que le
