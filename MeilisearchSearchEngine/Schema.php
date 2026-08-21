@@ -192,6 +192,43 @@ class Schema {
 	}
 
 	/**
+	 * Les caractères que le tokeniseur du socle garde **à l'intérieur** d'un mot, et qu'il faut
+	 * donc déclarer non-séparateurs à Meilisearch — sans quoi il redécoupe les mots que nous
+	 * venons de lui donner et tout le bénéfice du mode `tokenize_like_sqlsearch` est perdu.
+	 *
+	 * La liste est **dérivée du socle** plutôt que figée : elle dépend de `punctuation_tokenizer_regex`
+	 * et `separator_tokenizer_regex`, que chaque client peut redéfinir dans son `search.conf`.
+	 * On sonde donc le tokeniseur avec « aa<caractère>bb » et l'on retient ce qu'il ne coupe pas.
+	 *
+	 * Ce que cela donne sur la configuration livrée : `# @ % $ = ~ ^ * ? > / . _ - …`. Chacun
+	 * compte — mesuré sur le fonds CIPAR, « #Eglise » rendait 185 253 fiches au lieu de 7 282
+	 * faute du dièse, et « jauche » 86 au lieu de 30 parce que « jauche…laquelle » est un seul
+	 * mot pour le socle.
+	 *
+	 * @return array
+	 */
+	static private function nonSeparators(): array {
+		static $cache = null;
+		if ($cache !== null) { return $cache; }
+
+		$cache = ['.', '_', '-', '/'];   // repli si le tokeniseur n'est pas joignable
+		if (!class_exists('\WLPlugSearchEngineMeilisearch')) { return $cache; }
+
+		$candidats = ['#', '@', '%', '$', '=', '~', '^', '*', '?', '<', '>', '!', '&', '+',
+			',', ';', ':', '(', ')', '[', ']', '{', '}', '|', '/', '.', '_', '-', '…', '’', '«', '»'];
+		$gardes = [];
+		foreach ($candidats as $c) {
+			try {
+				$mots = \WLPlugSearchEngineMeilisearch::tokenize('aa' . $c . 'bb');
+			} catch (\Throwable $e) {
+				return $cache;
+			}
+			if (is_array($mots) && sizeof($mots) === 1 && mb_strpos($mots[0], $c) !== false) { $gardes[] = $c; }
+		}
+		return $cache = (sizeof($gardes) ? $gardes : $cache);
+	}
+
+	/**
 	 * La clé sous laquelle deux graphies d'une même valeur n'en font qu'une.
 	 *
 	 * Elle imite `utf8mb4_general_ci`, la collation sous laquelle le socle groupe : casse
@@ -419,7 +456,7 @@ class Schema {
 		// alors que Meilisearch y coupe. Sans cette déclaration, « 211467819_saint-roch… »
 		// redeviendrait plusieurs termes à l'indexation et tout le bénéfice serait perdu.
 		if ($tokenize_like_sqlsearch) {
-			$settings['nonSeparatorTokens'] = ['.', '_', '-', '/'];
+			$settings['nonSeparatorTokens'] = self::nonSeparators();
 		}
 		if ($searchable_attributes !== null) {
 			$settings['searchableAttributes'] = array_values($searchable_attributes);
