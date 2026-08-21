@@ -267,10 +267,25 @@ class WLPlugSearchEngineMeilisearch extends BaseSearchPlugin implements IWLPlugS
 
 			$hits = $this->execute($index, $query);
 		} catch (Meilisearch\ClientException $e) {
-			// L'application doit rester utilisable moteur éteint : on rend un résultat vide,
-			// et la panne est écrite noir sur blanc dans app/log/meilisearch.log.
 			Meilisearch\Log::error("Recherche « {$search_expression} » sur {$index} : " . $e->getMessage());
-			return new WLPlugSearchEngineMeilisearchResult([], [], $subject_tablenum);
+
+			// **Une requête refusée rend zéro ; une panne lève.** C'est la convention du socle,
+			// tenue par le connecteur ElasticSearch : il n'attrape que `BadRequest400Exception`
+			// — la requête malformée — et laisse remonter tout le reste, nœud injoignable
+			// compris (ElasticSearch.php:409).
+			//
+			// Le connecteur attrapait tout, et rendait donc zéro moteur éteint. Une panne
+			// devenait indiscernable d'un fonds vide : le catalogueur lit « il n'y a rien de
+			// tel » là où il faut lire « la recherche n'a pas eu lieu », et il agit en
+			// conséquence. C'est le pire mode de défaillance possible, et le journal ne le
+			// rattrape que pour qui le surveille.
+			//
+			// Le code porté par l'exception vaut 0 quand le moteur est injoignable, le statut
+			// HTTP sinon (Client::request).
+			if ((int)$e->getCode() === 400) {
+				return new WLPlugSearchEngineMeilisearchResult([], [], $subject_tablenum);
+			}
+			throw new ApplicationException(_t('Search engine unavailable: %1', $e->getMessage()));
 		}
 
 		$hits = $this->applyResultFilters($subject_tablenum, $hits, $filters);
