@@ -49,6 +49,54 @@ Le corpus CMA arrive en `access = 1` et sans images (`CA_SEED_CMA_MEDIA=1` pour 
 L'indexation de recherche est coupée pendant le chargement, pour que la réindexation se mesure
 comme une opération à part.
 
+## Point d'étape — 21 août 2026 : où s'arrête ce que Meilisearch peut apporter
+
+**Trois optimisations envisagées, trois écartées par la mesure.** Elles se ressemblent : chacune
+partait d'un chiffre réel mais non représentatif.
+
+| piste | ce que la mesure a dit |
+|---|---|
+| couche 1 — pousser les filtres dans le moteur | le filtrage SQL ne pèse que **9 à 11 %** du temps |
+| déléguer `execute()` | la machinerie du browse ne coûte que **27 à 349 ms**, tout le reste est la recherche |
+| couche 3 — paginer dans le moteur | **98,6 %** des recherches réelles rendent moins de mille fiches |
+
+La dernière est la plus nette. Sur les 649 585 recherches du journal CIPAR : 52,4 % rendent moins
+de 100 fiches, 46,2 % de 100 à 999, et **0,2 % dépassent 50 000**. Or le moteur matérialise mille
+identifiants en 11 ms et deux cent mille en 1 798 ms. Le cas que la pagination déléguée
+optimiserait — un facteur 300 sur la requête — est celui de deux recherches sur mille. `eglise` et
+ses 185 253 fiches, sur quoi reposait tout le raisonnement, est un cas de laboratoire : aucun
+catalogueur ne s'arrête là, il affine.
+
+**Ce que Meilisearch apporte est donc acquis et borné :**
+
+| | |
+|---|---|
+| queue de distribution | 66,7 s → **2,7 s** au browse |
+| facettes sous critère | 394 ms → **6-8 ms** |
+| empreinte | 21,4 Go dans MariaDB → **3 Go de fichiers** |
+| réindexation | 1 h 12 → **14 min** |
+
+Et ce qu'il ne rattrapera pas : **1,82× plus lent en médiane** sur les recherches courantes.
+Structurel au moteur — nous ne lui demandons déjà que l'identifiant, et court-circuiter son
+classement par pertinence ne change rien (mesuré : 17-20 ms contre 19).
+
+### La couverture des facettes aussi est au bout
+
+Huit déclins subsistent sur quarante, et l'on sait désormais pourquoi aucun ne se traduira :
+
+- **`label` ne se délègue pas, par nature.** Elle ne rend pas une distribution mais une jointure :
+  pour chaque titre distinct, un enregistrement représentatif complet — `id` est un *object_id*,
+  avec `parent_id`, `access`, `notes`, `source_info`, `sort_label`. Meilisearch sait compter des
+  valeurs ; il faudrait de toute façon aller chercher ces champs en SQL pour chacun des 2 091
+  postes. Une requête de plus, pas de moins. Même raison qu'une facette `field` à gabarit ;
+- **`violations`, `checkouts`, `dupeidno` sont sans enjeu** : elles portent sur des tables d'état
+  que l'indexeur ne touche pas, et rendent 0, 1 et 11 postes en 4, 27 et 162 ms sur 213 258
+  objets.
+
+> **Mesurer une facette sans critère ne dit rien de son coût réel.** `title_facet` met 1 914 ms
+> sur le fonds entier et **160 ms** sous une recherche à 10 333 fiches ; `type_facet` passe de
+> 394 ms à 6. Le browse s'emploie sous critère — c'est là qu'il faut mesurer.
+
 ## Point d'étape — 21 août 2026 : le cœur de CollectiveAccess n'est plus patché
 
 **La délégation du Browse se pose désormais en substituant `app/lib/Browse/BaseBrowse.php`**, une

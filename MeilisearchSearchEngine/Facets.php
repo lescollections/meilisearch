@@ -97,7 +97,23 @@ class Facets {
 		$type = $facet_info['type'] ?? null;
 		if ($type === null)  { return $this->decliner('facette virtuelle, sans contenu'); }
 		if (!in_array($type, ['fieldList', 'has', 'authority', 'field', 'normalizedDates', 'attribute'], true)) {
-			return $this->decliner("type « {$type} » non traduit");
+			// Les raisons ne se valent pas, et les confondre laisserait croire à du travail qui
+			// dort. Mesuré sur le fonds CIPAR le 21 août 2026 :
+			//
+			//   • `label` — **ne se délègue pas, par nature**. Elle ne rend pas une distribution
+			//     mais une jointure : pour chaque titre distinct, un enregistrement représentatif
+			//     complet (`id` = un object_id, `parent_id`, `access`, `notes`, `source_info`,
+			//     `sort_label`). Meilisearch sait compter des valeurs ; il faudrait de toute façon
+			//     aller chercher ces champs en SQL pour chaque poste — une requête de plus, pas de
+			//     moins. Même raison qu'une facette `field` à gabarit ;
+			//   • `violations`, `checkouts`, `dupeidno` — **sans enjeu**. Elles portent sur des
+			//     tables d'état que l'indexeur ne touche pas, et rendent respectivement 0, 1 et
+			//     11 postes en 4, 27 et 162 ms sur 213 258 objets. Les traduire ne rapporterait
+			//     rien de mesurable.
+			$raison = in_array($type, ['label'], true)
+				? "type « {$type} » : jointure, non traduisible en distribution"
+				: "type « {$type} » non traduit";
+			return $this->decliner($raison);
 		}
 		if ($type === 'normalizedDates') {
 			// Ces options changent la nature du calcul — envelope imposée, poste « date
