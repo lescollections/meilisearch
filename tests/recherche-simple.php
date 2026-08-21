@@ -109,13 +109,23 @@ verifier('le numéro qualifié retrouve l\'objet', function () use ($temoin) {
 	contient($temoin['object_id'], chercher_objets('ca_objects.idno:"' . $temoin['idno'] . '"'));
 });
 
-verifier('la partie numérique seule retrouve l\'objet', function () use ($temoin) {
-	// « CLE.1234 » doit être retrouvable par « 1234 » : c'est ce que produit INDEX_AS_IDNO.
-	$parties = preg_split('![.\s_/-]+!', $temoin['idno']);
-	$numero  = end($parties);
-	est_vrai(strlen($numero) > 0, 'numéro témoin inexploitable');
-	contient($temoin['object_id'], chercher_objets('ca_objects.idno:' . $numero),
-		"recherche de « {$numero} » dans idno");
+verifier('un préfixe du numéro retrouve l\'objet', function () use ($temoin) {
+	// Ce que `INDEX_AS_IDNO` garantit, ce sont les **préfixes hiérarchiques** : « CLE.1938.388.a »
+	// est indexé avec « CLE », « CLE.1938 », « CLE.1938.388 ». Chercher la série doit ramener ses
+	// numéros — c'est voulu, et ce n'est pas au connecteur de le défaire.
+	//
+	// Le test cherchait auparavant le *dernier* composant (« 388.a » → « a »), qui n'est pas dans
+	// les variantes : il ne passait que parce que Meilisearch découpait lui-même sur les points.
+	// Depuis que le connecteur indexe les mots du socle et lui déclare « . _ - / » non-séparateurs,
+	// ce découpage n'a plus lieu — et SqlSearch2 ne l'a jamais fait non plus. Vérifié sur le
+	// fonds CIPAR : sur « 0211.190.873_Saint-Amand_1 », les deux moteurs rendent zéro pour un
+	// composant isolé et un pour le numéro entier. Nous sommes alignés, c'est ce qui est demandé.
+	$parties = explode('.', $temoin['idno']);
+	est_vrai(sizeof($parties) > 1, 'numéro témoin sans préfixe hiérarchique');
+	array_pop($parties);
+	$prefixe = join('.', $parties);
+	contient($temoin['object_id'], chercher_objets('ca_objects.idno:"' . $prefixe . '"'),
+		"recherche du préfixe « {$prefixe} » dans idno");
 });
 
 verifier('le numéro qualifié ne ramène rien d\'étranger', function () use ($temoin) {

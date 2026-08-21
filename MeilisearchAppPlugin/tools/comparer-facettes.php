@@ -71,13 +71,15 @@ if (!$moteur || !method_exists($moteur, 'getBrowseFacetContent')) {
  * comparerait le moteur avec lui-même — et trouverait évidemment tout conforme.
  */
 $delegation = function ($valeur) {
-	if (!property_exists('BrowseEngine', 's_facet_engine')) { return; }
-	$p = new ReflectionProperty('BrowseEngine', 's_facet_engine');
+	if (!property_exists('BaseBrowse', 'msearch_engine')) { return; }
+	// La délégation vit désormais dans BaseBrowse, que le connecteur substitue — le cœur de
+	// CollectiveAccess n'est plus patché du tout. Voir MeilisearchSearchEngine/msearch_BaseBrowse.php.
+	$p = new ReflectionProperty('BaseBrowse', 'msearch_engine');
 	$p->setAccessible(true);
 	$p->setValue(null, $valeur);
 };
 
-$patch_pose = property_exists('BrowseEngine', 's_facet_engine');
+$patch_pose = property_exists('BaseBrowse', 'msearch_engine');
 
 $browse_neuf = function (array $criteres = []) use ($table) {
 	$b = caGetBrowseInstance($table);
@@ -270,7 +272,7 @@ printf("\n\033[1mInstance : %s\033[0m\n", $racine);
 printf("\033[90mtable %s — moteur en service : %s%s\033[0m\n\n",
 	$table,
 	Configuration::load()->get('search_engine_plugin'),
-	$patch_pose ? '' : " — \033[33mpatch du Browse absent\033[0m");
+	$patch_pose ? '' : " — \033[33msubstitution de BaseBrowse absente\033[0m");
 
 // Comparer pendant qu'un index se reconstruit ne compare rien : il manque alors une part
 // arbitraire des documents, et toutes les facettes paraissent diverger. Vécu.
