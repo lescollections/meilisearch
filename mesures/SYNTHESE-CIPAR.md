@@ -208,7 +208,7 @@ les greffons.
 |---|---|
 | **floutier** | déployé, comparé, **pas basculé** — la décision reste à prendre |
 | **CIPAR** | fonds rapatrié pour l'essai ; rien de déployé chez le client |
-| **130.32** (préprod-130.32) | première mise à l'échelle réelle (661 025 documents) ; essai à reprendre |
+| **instance 130.32** (préprod) | première mise à l'échelle réelle (661 025 documents) ; essai à reprendre |
 | **Mayenne** | hors de portée — le connecteur ne se charge pas sur CollectiveAccess 1.7 |
 
 **Ce que la bascule de floutier emporterait**, et qui n'est pas décidé : elle change la

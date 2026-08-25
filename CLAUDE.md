@@ -941,7 +941,7 @@ transporte donc d'une instance à l'autre.
 
 ### À reprendre là
 
-1. **Lancer `tools/diagnostiquer-recherches.php --historique` sur préprod-130.32** (130.32,
+1. **Lancer `tools/diagnostiquer-recherches.php --historique` sur préprod-130.32** (
    plusieurs centaines de milliers de fiches). C'est la seule comparaison qui vaille : `num_hits`
    y a été écrit par SqlSearch2, sur des requêtes que des usagers ont réellement tapées. L'outil
    classe en identique / à 5 % près / plus large / plus étroite / **vidée**, et imprime la
