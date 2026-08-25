@@ -25,8 +25,21 @@ Ce qui n'est pas encore fait est listé plus bas, sans faux-semblant.
 
 ## Installer
 
-Trois liens symboliques et un réglage. C'est ce que fait [`dev/bin/dev-link-plugin`](dev/bin/dev-link-plugin),
-qui sert aussi de documentation exécutable :
+Sur une instance réelle, [`installer.sh`](installer.sh) fait tout ce qui est inerte — les liens,
+la vérification du socle, et la délégation du Browse si on la demande — et ne bascule jamais le
+moteur :
+
+```sh
+./installer.sh /var/www/…/providence            # pose les liens, vérifie
+./installer.sh /var/www/…/providence --browse   # pose aussi la délégation du Browse
+./installer.sh /var/www/…/providence --retirer  # retire tout, rétablit l'original
+```
+
+Poser et basculer sont deux décisions distinctes : tout ce que pose l'installeur est sans effet
+tant que `search_engine_plugin` vaut autre chose que Meilisearch.
+
+À la main, ce sont trois liens symboliques et un réglage. C'est aussi ce que fait
+[`dev/bin/dev-link-plugin`](dev/bin/dev-link-plugin), qui sert de documentation exécutable :
 
 ```sh
 DEPOT=/chemin/vers/ce/depot
@@ -129,6 +142,8 @@ tools/elaguer-indexation.php      réduit ce qui est indexé, et dit ce qu'on pe
 tools/mesurer-indexation.php      où passe le temps d'une réindexation
 tools/mesurer-recherche.php       où passe le temps d'une recherche
 tools/diagnostiquer-recherches.php  quelles recherches le connecteur rend-il mal ?
+tools/comparer-latence.php        les deux moteurs sur les mêmes recherches, même machine, même processus
+tools/comparer-facettes.php       les facettes du Browse : mêmes contenus, mêmes comptes ?
 tools/verifier-socle.php          cette instance peut-elle recevoir le connecteur ?
 ```
 
@@ -261,9 +276,12 @@ les comptes dans `facetDistribution` ; il rend le format que le socle attend, li
 SQL. Sa règle unique : **traduire exactement ou décliner** — `relative_to`, ACL par
 enregistrement, expression `_search` à syntaxe Lucene, types de facette non couverts
 (`normalizedDates`, `location`, `checkouts`…) rendent la main au SQL du socle, à l'identique.
-Couvert aujourd'hui : `fieldList`, `has`, `authority`. Nécessite le patch du socle (délégation
-dans `BrowseEngine::getFacetContent()`, ~36 lignes, identique dans Providence et Pawtucket2) et
-une réindexation ; sans eux, tout décline tout seul. `tests/browse-facettes.php` prouve
+Couvert aujourd'hui : `fieldList`, `has`, `authority`. Nécessite la délégation du Browse et une
+réindexation ; sans elles, tout décline tout seul. La délégation ne patche plus le cœur : elle
+remplace `app/lib/Browse/BaseBrowse.php` — la classe-crochet de 50 lignes par où passent toutes
+les classes de browse — par un lien vers `msearch_BaseBrowse.php`, qui traduit exactement ou
+décline (l'original est conservé à côté ; `installer.sh --browse` la pose, `--retirer` la
+défait). Les 8 516 lignes de `BrowseEngine` restent intactes. `tests/browse-facettes.php` prouve
 l'équivalence contre l'instance — même contenu, mêmes comptes — avec un seul écart assumé : le
 compte d'un ancêtre est chez nous le nombre de documents distincts de sa branche, là où le SQL
 additionne les descendants (un objet lié à deux descendants y compte deux fois). Mesuré à
