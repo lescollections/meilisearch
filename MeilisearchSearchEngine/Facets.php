@@ -1014,10 +1014,19 @@ class Facets {
 		$yes = (int)($responses[0]['totalHits'] ?? 0);
 		$no  = (int)($responses[1]['totalHits'] ?? 0);
 
+		if (!$yes) {
+			// Zéro document ne porte le champ. Deux mondes indistinguables depuis l'index :
+			// la relation n'existe réellement nulle part, ou l'indexeur n'écrit jamais ce champ
+			// pour cette table — constaté en production sur les relations réflexives
+			// (ca_objects↔ca_objects : 16 946 fiches liées en base, 0 document porteur) et sur
+			// les tables liées hors du périmètre d'indexation du profil. On décline : le SQL
+			// sait trancher, et une facette `has` lui coûte peu.
+			return $this->decliner('aucun document ne porte ' . join('/', $attrs) . ' — au SQL');
+		}
 		if (!empty($options['checkAvailabilityOnly'])) {
 			return ($yes > 0) && ($no > 0);
 		}
-		if (!$yes || !$no) { return []; }
+		if (!$no) { return []; }
 
 		$yes_text = !empty($facet_info['label_yes']) ? $facet_info['label_yes'] : _t('Yes');
 		$no_text  = !empty($facet_info['label_no'])  ? $facet_info['label_no']  : _t('No');
