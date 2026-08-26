@@ -282,15 +282,20 @@ class Facets {
 		if (!empty($options['filterDeaccessionedRecords']) && $t_subject->hasField('is_deaccessioned')) {
 			$attr = $this->schema->fieldName($subject_table, 'is_deaccessioned');
 			if (!in_array($attr, $fields, true)) { return $this->decliner('filtre aliénation : champ non filtrable'); }
-			$clauses[] = $attr . ' IN ' . $this->inList([0]);
+			$clauses[] = '(' . $attr . ' IN ' . $this->inList([0]) . ' OR ' . $attr . ' NOT EXISTS)';
 		}
 
 		// Ceinture et bretelles : les enregistrements supprimés sont désindexés, mais si le
-		// champ est là, le filtre ne coûte rien.
+		// champ est là, le filtre ne coûte rien. « Déclaré filtrable » ne veut pas dire
+		// « présent dans les documents » : sur une instance dont l'indexeur n'écrit jamais
+		// `deleted` — constaté en production, aucun document ne portait le champ — la clause
+		// `deleted IN [0]` ne matchait RIEN et rendait TOUTES les facettes vides. Un document
+		// sans le champ est vivant par contrat d'indexation : `NOT EXISTS` dit exactement cela.
+		// Même garde sur le filtre d'aliénation ci-dessus, par le même raisonnement.
 		if ($t_subject->hasField('deleted')) {
 			$attr = $this->schema->fieldName($subject_table, 'deleted');
 			if (in_array($attr, $fields, true)) {
-				$clauses[] = $attr . ' IN ' . $this->inList([0]);
+				$clauses[] = '(' . $attr . ' IN ' . $this->inList([0]) . ' OR ' . $attr . ' NOT EXISTS)';
 			}
 		}
 

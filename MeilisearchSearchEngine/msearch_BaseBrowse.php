@@ -88,6 +88,11 @@ class BaseBrowse extends BrowseEngine {
 	 * @return array|bool|null
 	 */
 	private function msearchFacetContent(string $facet_name, $options) {
+		// Opt-in explicite : tant que la délégation des facettes n'est pas validée sur le
+		// profil de l'instance (voir mesures/RETOUR-130-32.md — 21 facettes divergentes au
+		// premier rejeu), elle ne s'active que si CA_MSEARCH_FACETS=1 est posée dans
+		// l'environnement. Sans elle, le SQL du socle garde la main partout.
+		if (getenv('CA_MSEARCH_FACETS') !== '1') { return null; }
 		$moteur = self::msearchEngine();
 		if (!$moteur) { return null; }
 
