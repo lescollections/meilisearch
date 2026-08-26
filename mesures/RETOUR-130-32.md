@@ -61,7 +61,30 @@ là où le fonds CIPAR (519 206 documents, fiches plus simples, base locale) ten
    servir, la charge reste marginale. C'est le point à dire aux exploitants : la contrainte de
    fenêtre ne porte que sur la bascule, pas sur l'indexation.
 
-## Chiffres de fin de course
+## Chiffres de fin de course (26 août)
 
-*À compléter à l'issue : durée totale réelle, comptes par table (SQL contre Meilisearch),
-écart résiduel après les deux lots perdus, rattrapage effectué.*
+**Durée totale : 370 minutes** (17 h 05 → 23 h 16). 661 162 lignes, quinze tables, six vides.
+
+**Sept ouvriers sont morts en cours de route**, sur quatre tables (objets ×2, représentations ×1,
+entités ×3, occurrences ×1) — et la cause réelle n'est pas celle qu'on croyait. Ce n'est pas
+« une valeur nulle » : c'est **une valeur au codage UTF-8 invalide**. `preg_replace` en mode `/u`
+retourne alors null, que `caIdentifyAlphabet()` — non nullable — transforme en TypeError fatale.
+Un premier garde-fou posé à l'entrée de `tokenize()` (nul → rien) n'a rien changé : le null naît
+*au milieu* de la fonction. Le correctif qui tient : réparer le codage
+(`mb_convert_encoding` UTF-8 → UTF-8) et retenter. Validé unitairement, puis à l'échelle —
+la reprise des trois tables s'est faite **sans une seule mort**.
+
+**Le rattrapage a coûté 8 minutes** là où la course avait coûté six heures :
+les trois tables légères refaites entièrement (purge par table, 247 s), les 72 objets perdus
+— deux plages contiguës, la signature exacte des lots en vol des deux ouvriers morts —
+réindexés chirurgicalement sans purge, et la dérive accumulée depuis le lancement (2 lignes)
+rejouée depuis le journal des modifications.
+
+**Bilan final : quinze tables sur quinze, zéro écart, identifiant par identifiant sur les
+quatre tables touchées.** L'outillage qui reste : un script de rattrapage de dérive à rejouer
+juste avant la bascule, pour un index exact à la seconde.
+
+La leçon qui manquait à la liste : **le tokeniseur partagé est un point de défaillance commun**
+— le même TypeError guette l'indexation en ligne de SqlSearch2 à chaque sauvegarde d'une fiche
+mal encodée. Le garde-fou protège donc aussi le moteur en place ; la correction doit remonter
+au socle en PR.
