@@ -109,12 +109,46 @@ class MeilisearchPlugin extends BaseApplicationPlugin {
 		// ligne du socle fusionne au niveau de l'attribut et ne repasse pas par les fragments
 		// de facettes — constaté en production, les fiches créées au fil de l'eau arrivaient
 		// dans l'index sans aucun champ facet_*. Après chaque enregistrement, la fiche entière
-		// est donc réindexée : le document repart complet, facettes comprises. Le coût est une
-		// hydratation de plus par sauvegarde ; un échec ici ne doit jamais faire échouer
-		// l'enregistrement de l'utilisateur.
-		$this->reindexRowCompletely($params);
+		// est donc réindexée : le document repart complet, facettes comprises. Un échec ici ne
+		// doit jamais faire échouer l'enregistrement de l'utilisateur.
+		//
+		// Si l'instance déclare une file de report (`deferred_reindex_queue` dans
+		// meilisearch.conf), la réindexation part au worker sous le code 1000+table_num et
+		// l'enregistrement web économise l'hydratation (1 à 2,5 s mesurées) ; sans file, ou si
+		// l'enfilement échoue, elle se fait immédiatement, comme avant.
+		$this->deferOrReindex($params);
 
 		return $params;
+	}
+	# -------------------------------------------------------
+	/**
+	 * Reporte la réindexation complète vers la file déclarée par l'instance, ou l'exécute
+	 * immédiatement à défaut. Le worker qui consomme la file doit traiter les codes
+	 * 1000+table_num comme « réindexer ce document, rien d'autre ».
+	 */
+	private function deferOrReindex(array $params): void {
+		try {
+			if (!$this->engineIsCurrent()) { return; }
+			$t = $params['instance'] ?? null;
+			if (!is_object($t) || !method_exists($t, 'getPrimaryKey') || !$t->getPrimaryKey()) { return; }
+			$queue = (string)$this->config->get('deferred_reindex_queue');
+			if ($queue !== '' && preg_match('!^[A-Za-z0-9_]+$!', $queue)) {
+				try {
+					$db = new Db();
+					$db->query("
+						INSERT INTO {$queue} (table_num, row_id, status, enqueued_at)
+						VALUES (?, ?, 'pending', ?)
+						ON DUPLICATE KEY UPDATE status='pending', enqueued_at=VALUES(enqueued_at), error_msg=NULL
+					", [1000 + (int)$t->tableNum(), (int)$t->getPrimaryKey(), time()]);
+					return;
+				} catch (\Throwable $e) {
+					$this->log('Report de réindexation en échec (' . $e->getMessage() . ') — réindexation immédiate.', 'ERREUR');
+				}
+			}
+			$this->reindexRowCompletely($params);
+		} catch (\Throwable $e) {
+			$this->log('Compensation d\'enregistrement en échec : ' . $e->getMessage(), 'ERREUR');
+		}
 	}
 	# -------------------------------------------------------
 	/**
