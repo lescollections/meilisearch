@@ -89,6 +89,18 @@ $browse_neuf = function (array $criteres = []) use ($table) {
 };
 
 /**
+ * Les deux postes d'une facette has ont-ils bougé en miroir — autant de « avec » gagnés
+ * côté moteur que de « sans » perdus ? C'est la signature des relations indirectes que le
+ * profil d'indexation fait voyager dans l'index (voir la famille d'écarts assumés).
+ */
+function ecart_has_en_miroir(array $c_sql, array $c_ms): bool {
+	if (!isset($c_sql[0], $c_sql[1], $c_ms[0], $c_ms[1])) { return false; }
+	$d_avec = (int)$c_ms[1] - (int)$c_sql[1];
+	$d_sans = (int)$c_sql[0] - (int)$c_ms[0];
+	return ($d_avec > 0) && ($d_avec === $d_sans);
+}
+
+/**
  * Cet enregistrement a-t-il des descendants dans sa hiérarchie ?
  *
  * C'est la question qui distingue une divergence d'un écart légitime : sur un nœud
@@ -409,6 +421,16 @@ $comparer = function (string $facette, array $criteres, string $intitule)
 		if (($info['type'] ?? null) === 'attribute' && $c_ms[$id] > $n
 			&& ($graphies = graphies_eparpillees($info['element_code'] ?? null, $id))) {
 			$assumes[] = sprintf('%s : %d graphies que le socle éparpille (SQL %d, fiches %d)', $id, $graphies, $n, $c_ms[$id]);
+			continue;
+		}
+
+		// Facette has : l'index porte aussi les relations que le profil d'indexation fait
+		// voyager indirectement — un objet localisé par le contenant qui le porte, par
+		// exemple. Le SQL ne compte que la relation directe ; les deux postes bougent alors
+		// en miroir (autant de « avec » gagnés que de « sans » perdus). Décision d'instance
+		// du 26/08/2026 : le compte du moteur — où est physiquement la fiche — fait foi.
+		if (($info['type'] ?? null) === 'has' && ecart_has_en_miroir($c_sql, $c_ms)) {
+			$assumes[] = sprintf('%s : relations indirectes portées par l\'index (SQL %d, moteur %d) — le compte moteur fait foi (décision du 26/08/2026)', $id, $n, $c_ms[$id]);
 			continue;
 		}
 
