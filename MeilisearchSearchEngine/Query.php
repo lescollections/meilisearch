@@ -269,7 +269,17 @@ class Query {
 			// recherche à deux mots ramènerait la moitié du fonds.
 			'matchingStrategy'     => 'all',
 		];
-		if ($field !== null) { $params['attributesToSearchOn'] = [$field]; }
+		// Un terme exact, numérique, porté sur un intrinsèque filtrable ne se cherche pas en
+		// texte : Meilisearch n'indexe pas les nombres pour la recherche, seulement pour le
+		// filtre. `ca_storage_locations.is_enabled:1` — la restriction que le socle pose sur
+		// ses sélecteurs d'emplacements — rendait zéro par la voie texte ; en filtre, elle
+		// rend exactement ce que le SQL rendait.
+		if ($field !== null && sizeof($clauses) === 1 && !empty($clauses[0]['exact'])
+			&& is_numeric($clauses[0]['text'])
+			&& in_array(preg_replace('!^.*__!', '', $field), Schema::FILTER_FIELDS, true)) {
+			$params['q']      = '';
+			$params['filter'] = $field . ' = ' . $clauses[0]['text'];
+		} elseif ($field !== null) { $params['attributesToSearchOn'] = [$field]; }
 
 		$id = sizeof($this->leaves) ? (max(array_keys($this->leaves)) + 1) : 0;
 		$this->leaves[$id] = $params;

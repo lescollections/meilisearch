@@ -88,8 +88,12 @@ class Schema {
 	 * (accès, type, source, aliénation). Rendus filtrables d'office : un filtre de facette
 	 * dont le champ n'est pas filtrable échoue, et un browse aux comptes faux est pire
 	 * qu'un browse lent.
+	 *
+	 * `is_enabled` s'y ajoute pour les recherches par champ : les formulaires du socle
+	 * restreignent les emplacements aux actifs (`ca_storage_locations.is_enabled:1`), et un
+	 * intrinsèque numérique ne se cherche pas en texte — il se filtre.
 	 */
-	const FILTER_FIELDS = ['access', 'type_id', 'source_id', 'is_deaccessioned', 'deleted', 'parent_id'];
+	const FILTER_FIELDS = ['access', 'type_id', 'source_id', 'is_deaccessioned', 'deleted', 'parent_id', 'is_enabled'];
 
 	/** @var string préfixe des noms d'index */
 	private $prefix;

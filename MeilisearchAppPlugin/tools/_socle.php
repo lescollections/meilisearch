@@ -43,7 +43,11 @@ function donnees_de_champs($indexeur, string $table, array $ids, ?Db $db = null)
 	static $prevenu = false;
 	if (!$prevenu) {
 		$prevenu = true;
-		fwrite(STDERR, "  [socle] getFieldDataForReindex() absente : lecture directe de {$table}.\n");
+		// STDERR n'existe qu'en CLI ; sous FPM (la compensation du greffon passe ici),
+		// écrire dessus est une erreur fatale — silencieusement, alors.
+		if (defined('STDERR')) {
+			fwrite(STDERR, "  [socle] getFieldDataForReindex() absente : lecture directe de {$table}.\n");
+		}
 	}
 
 	$pk = Datamodel::primaryKey($table);
