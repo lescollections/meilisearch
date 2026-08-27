@@ -1056,8 +1056,12 @@ class Facets {
 		if (!$this->engine->isFilterable($index, $attr)) { return $this->decliner("« {$attr} » non déclaré filtrable"); }
 
 		if (!in_array($attr, $this->engine->indexFields($index), true)) {
-			// Déclaré, mais aucun document ne le porte : contenu réellement vide.
-			return !empty($options['checkAvailabilityOnly']) ? false : [];
+			// Déclaré filtrable mais porté par aucun document : deux mondes indistinguables
+			// depuis l'index — la relation n'existe réellement nulle part, ou l'indexeur ne
+			// l'écrit pas pour cette table. Constaté en production : 40 767 collections liées
+			// à des entités, zéro document porteur de facet__ca_entities. Rendre une facette
+			// vide cachait des comptes que le SQL rend : on décline, il tranche.
+			return $this->decliner("aucun document ne porte « {$attr} » — au SQL");
 		}
 
 		$t_rel = \Datamodel::getInstanceByTableName($table, true);
