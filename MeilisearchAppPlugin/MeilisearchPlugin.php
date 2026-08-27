@@ -96,16 +96,80 @@ class MeilisearchPlugin extends BaseApplicationPlugin {
 	 * @return bool true pour laisser tourner les greffons suivants
 	 */
 	public function hookSaveItem($params) {
-		if (!$this->config->get('log_saves')) { return $params; }
+		if ($this->config->get('log_saves')) {
+			$this->log(sprintf(
+				'Enregistrement %s#%s (%s)',
+				$params['table_name'] ?? '?',
+				$params['id'] ?? '?',
+				!empty($params['is_insert']) ? 'création' : 'mise à jour'
+			));
+		}
 
-		$this->log(sprintf(
-			'Enregistrement %s#%s (%s)',
-			$params['table_name'] ?? '?',
-			$params['id'] ?? '?',
-			!empty($params['is_insert']) ? 'création' : 'mise à jour'
-		));
+		// La compensation promise par updateIndexingInPlace() du connecteur : l'indexation en
+		// ligne du socle fusionne au niveau de l'attribut et ne repasse pas par les fragments
+		// de facettes — constaté en production, les fiches créées au fil de l'eau arrivaient
+		// dans l'index sans aucun champ facet_*. Après chaque enregistrement, la fiche entière
+		// est donc réindexée : le document repart complet, facettes comprises. Le coût est une
+		// hydratation de plus par sauvegarde ; un échec ici ne doit jamais faire échouer
+		// l'enregistrement de l'utilisateur.
+		$this->reindexRowCompletely($params);
 
 		return $params;
+	}
+	# -------------------------------------------------------
+	/**
+	 * Après suppression d'un élément : le retrait en ligne du socle peut laisser le document
+	 * dans l'index — constaté en production sur une suppression du soir, encore servie le
+	 * matin. On retire le document explicitement, en plus du chemin du socle.
+	 */
+	public function hookDeleteItem($params) {
+		try {
+			if (!$this->engineIsCurrent()) { return $params; }
+			$table = $params['table_name'] ?? null;
+			$id    = (int)($params['id'] ?? 0);
+			if (!$table || !$id) { return $params; }
+			$moteur = SearchBase::newSearchEngine('Meilisearch');
+			if ($moteur && method_exists($moteur, 'removeRowIndexing')) {
+				$moteur->removeRowIndexing((int)Datamodel::getTableNum($table), $id);
+				if (method_exists($moteur, 'flushContentBuffer')) { $moteur->flushContentBuffer(); }
+			}
+		} catch (\Throwable $e) {
+			$this->log('Retrait d\'index après suppression en échec : ' . $e->getMessage(), 'ERREUR');
+		}
+		return $params;
+	}
+	# -------------------------------------------------------
+	/**
+	 * Réindexe complètement l'enregistrement qui vient d'être sauvé — mêmes chemins que le
+	 * réindexeur en lot, sans purge. Silencieux pour l'utilisateur en cas d'échec :
+	 * l'enregistrement est fait, seul l'index peut retarder.
+	 */
+	private function reindexRowCompletely(array $params): void {
+		try {
+			if (!$this->engineIsCurrent()) { return; }
+			$t = $params['instance'] ?? null;
+			if (!is_object($t) || !method_exists($t, 'getPrimaryKey') || !$t->getPrimaryKey()) { return; }
+			require_once(__CA_LIB_DIR__ . '/Search/SearchIndexer.php');
+			require_once($this->plugin_path . '/tools/_socle.php');
+			$db       = new Db();
+			$indexeur = new SearchIndexer($db, 'Meilisearch');
+			$table    = $t->tableName();
+			$id       = (int)$t->getPrimaryKey();
+			$fd       = donnees_de_champs($indexeur, $table, [$id], $db);
+			$indexeur->indexRow((int)$t->tableNum(), $id, $fd[$id] ?? [], true);
+			vider_tampon_moteur(SearchBase::newSearchEngine('Meilisearch'));
+		} catch (\Throwable $e) {
+			$this->log('Réindexation complète après enregistrement en échec : ' . $e->getMessage(), 'ERREUR');
+		}
+	}
+	# -------------------------------------------------------
+	/**
+	 * Le moteur en service est-il Meilisearch ? Sans lui, la compensation serait du travail
+	 * pour un index que personne n'interroge.
+	 */
+	private function engineIsCurrent(): bool {
+		return $this->searchEngineIsInstalled()
+			&& (Configuration::load()->get('search_engine_plugin') === 'Meilisearch');
 	}
 	# -------------------------------------------------------
 	/**
