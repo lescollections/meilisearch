@@ -452,7 +452,23 @@ class Document {
 			if (!strlen(trim($value))) { continue; }
 
 			if ($kind === 'intrinsic' && $this->isNumericIntrinsic($table_name, $field_name)) {
-				$out[] = (float)$value;
+				// **Un entier s'indexe entier, jamais en flottant.** Meilisearch indexe un nombre
+				// par son écriture : `(float)52298` donne le jeton « 52298.0 », et la correspondance
+				// exacte que pose Query::clause() pour un terme sans joker — « 52298 » — n'y
+				// correspond pas. `ca_collections.collection_id:52298` rendait zéro là où le champ
+				// entier voisin (`facet__ca_collections`) rend les 125 fiches de l'opération ; en
+				// recherche élargie, le même terme matchait « 52298.0 » par préfixe et ramenait
+				// 817 fiches étrangères. C'est ce qui a cassé l'inventaire d'opération, la
+				// sélection des contenants du bordereau, les états et la résolution des entités
+				// à l'import SGA — tous interrogent le moteur par identifiant.
+				//
+				// Les identifiants du modèle sont des entiers : c'est la forme entière qui doit
+				// atteindre l'index. Les intrinsèques réellement décimaux (bornes hiérarchiques,
+				// dates converties) gardent le flottant.
+				$nombre = (float)$value;
+				$out[] = ((floor($nombre) === $nombre) && (abs($nombre) < (float)PHP_INT_MAX))
+					? (int)$nombre
+					: $nombre;
 			} elseif ($this->tokenize_like_sqlsearch) {
 				// Les mots du socle, **recollés par des espaces** et non rangés un par un dans un
 				// tableau. La distinction n'est pas cosmétique : Meilisearch traite les éléments
