@@ -98,14 +98,52 @@ class Schema {
 	/** @var string préfixe des noms d'index */
 	private $prefix;
 
+	/**
+	 * Suffixe ajouté aux noms d'index, valable pour tout le processus.
+	 *
+	 * C'est le point d'injection du mode fantôme du réindexeur : `indexName()` est le seul
+	 * endroit du connecteur qui nomme un index — écriture comme lecture, voir Meilisearch.php,
+	 * Facets.php, MeilisearchConfigurationSettings.php — et un suffixe posé ici suffit donc à
+	 * détourner un processus entier vers `<index>_new` sans qu'aucun appelant ait à le savoir.
+	 *
+	 * Statique, et non propre à l'instance : le réindexeur fait vivre deux moteurs côte à côte,
+	 * celui de SearchIndexer et le sien, qui portent chacun leur Schema. Un réglage d'instance
+	 * n'en toucherait qu'un — c'est-à-dire qu'une moitié des écritures partirait dans l'index
+	 * vivant, silencieusement.
+	 *
+	 * @var string
+	 */
+	static private $shadow_suffix = '';
+
+	/**
+	 * Détourne ce processus vers les index suffixés. Chaîne vide pour revenir aux index vivants.
+	 */
+	static public function setShadowSuffix(string $suffix): void {
+		self::$shadow_suffix = (string)preg_replace('![^A-Za-z0-9_-]+!', '', $suffix);
+	}
+
+	static public function shadowSuffix(): string {
+		return self::$shadow_suffix;
+	}
+
 	public function __construct(string $prefix) {
 		$this->prefix = $this->sanitize($prefix);
 	}
 
 	/**
-	 * Nom de l'index d'une table sujet, désignée par son numéro ou son nom.
+	 * Nom de l'index d'une table sujet, désignée par son numéro ou son nom — suffixe de mode
+	 * fantôme compris, s'il y en a un.
 	 */
 	public function indexName($table): string {
+		return $this->liveIndexName($table) . self::$shadow_suffix;
+	}
+
+	/**
+	 * Nom de l'index en service, suffixe de mode fantôme exclu : celui que la recherche des
+	 * usagers interroge, quel que soit l'endroit où le processus courant écrit. Le réindexeur en
+	 * a besoin pour désigner les deux membres d'une permutation.
+	 */
+	public function liveIndexName($table): string {
 		if (is_numeric($table)) { $table = \Datamodel::getTableName((int)$table); }
 		if (!$table) { throw new \InvalidArgumentException('Table sujet inconnue'); }
 		return $this->prefix . '_' . $this->sanitize($table);

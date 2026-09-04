@@ -814,6 +814,27 @@ class WLPlugSearchEngineMeilisearch extends BaseSearchPlugin implements IWLPlugS
 		return true;
 	}
 	# -------------------------------------------------------
+	/**
+	 * Crée l'index d'une table et y pose ses réglages, sans attendre qu'un document l'exige.
+	 *
+	 * Publique pour le mode fantôme du réindexeur, qui doit fabriquer un index même là où il n'y
+	 * aura rien à écrire : la permutation exige que les deux index existent, et une table vidée de
+	 * toutes ses lignes doit voir son index vivant devenir vide, pas rester tel qu'il était.
+	 *
+	 * Le nom rendu est celui que le processus courant vise — donc l'index fantôme quand
+	 * Schema::setShadowSuffix() a été posé.
+	 *
+	 * @return string nom de l'index préparé
+	 */
+	public function prepareIndexForTable($table): string {
+		$name = is_numeric($table) ? (string)\Datamodel::getTableName((int)$table) : (string)$table;
+		if (!strlen($name)) { throw new ApplicationException(_t('Unknown table: %1', $table)); }
+
+		$index = $this->schema->indexName($name);
+		$this->prepareIndex($index, $name);
+		return $index;
+	}
+	# -------------------------------------------------------
 	public function clearCaches(): void {
 		$this->clearBuffers();
 	}

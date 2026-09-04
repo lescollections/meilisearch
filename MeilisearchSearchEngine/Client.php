@@ -41,6 +41,16 @@ class Client {
 	private $trace_enabled = false;
 
 	/**
+	 * Corps brut de la dernière réponse, avant décodage.
+	 *
+	 * Retenu pour copySettings() seulement : c'est le seul appel qui ait besoin du texte reçu
+	 * plutôt que du tableau qu'on en tire.
+	 *
+	 * @var string
+	 */
+	private $last_response_body = '';
+
+	/**
 	 * Compteurs cumulés, toujours tenus : ils coûtent deux additions et répondent à la seule
 	 * question qui vaille quand une réindexation traîne — le temps part-il dans le moteur ou
 	 * dans CollectiveAccess ?
@@ -167,8 +177,67 @@ class Client {
 		return $r['results'] ?? [];
 	}
 
+	/**
+	 * Permute deux à deux le CONTENU des index désignés — documents, réglages et bases de
+	 * facettes suivent, les noms restent en place. C'est l'opération qui permet de reconstruire
+	 * un index à côté du sien puis de le mettre en service sans que la recherche soit vide une
+	 * seconde (Meilisearch ≥ 1.12).
+	 *
+	 * Toutes les paires sont permutées ensemble : la tâche est atomique, et permuter table par
+	 * table laisserait une fenêtre où ca_objects serait neuf et ca_entities encore d'hier.
+	 *
+	 * Les deux index d'une paire doivent exister. Sinon Meilisearch accepte la requête (HTTP 202)
+	 * et fait échouer la TÂCHE en `index_not_found` — vérifié sur 1.13.3 le 04/09/2026 : l'échec
+	 * ne se voit donc qu'à l'attente, d'où le waitForTask() qui suit.
+	 *
+	 * @param array $paires liste de couples [uid, uid]
+	 * @throws ClientException si la permutation échoue — rien n'a alors été permuté.
+	 */
+	public function swapIndexes(array $paires): array {
+		$corps = [];
+		foreach ($paires as $paire) { $corps[] = ['indexes' => array_values($paire)]; }
+		if (!sizeof($corps)) { return []; }
+
+		return $this->waitForTask($this->request('POST', '/swap-indexes', $corps));
+	}
+
+	/**
+	 * Statistiques de l'instance entière, et non d'un index : `databaseSize` est la taille du
+	 * fichier LMDB, `usedDatabaseSize` ce qui y est réellement occupé. Les deux servent à savoir
+	 * si le disque supportera un index fantôme à côté de l'index vivant.
+	 */
+	public function instanceStats(): array {
+		return $this->request('GET', '/stats');
+	}
+
 	public function getSettings(string $uid): array {
 		return $this->request('GET', '/indexes/' . rawurlencode($uid) . '/settings');
+	}
+
+	/**
+	 * Recopie tels quels les réglages d'un index sur un autre.
+	 *
+	 * Le transfert se fait en JSON brut, sans passer par un tableau PHP, et c'est indispensable :
+	 * json_decode() rend un tableau vide pour un objet vide, et json_encode() le réémet en `[]`.
+	 * Meilisearch refuse alors la requête entière — HTTP 400 `invalid_settings_synonyms`,
+	 * « expected an object, but found an array: [] », constaté le 04/09/2026 en recopiant les
+	 * réglages d'un index de test dont `synonyms` était vide. `embedders` et
+	 * `faceting.sortFacetValuesBy` tendent le même piège.
+	 *
+	 * Recopier le texte reçu dispense de savoir lesquels des réglages sont des objets, et le jour
+	 * où Meilisearch en ajoute un, la recopie le suivra sans qu'on y touche.
+	 */
+	public function copySettings(string $source, string $cible, bool $wait = true): array {
+		$this->request('GET', '/indexes/' . rawurlencode($source) . '/settings');
+		$json = $this->last_response_body;
+
+		if (!strlen(trim($json))) {
+			throw new ClientException("Réglages de l'index {$source} illisibles : réponse vide");
+		}
+
+		$task = $this->request('PATCH', '/indexes/' . rawurlencode($cible) . '/settings', $json, true);
+		if ($wait) { $this->waitForTask($task); }
+		return $task;
 	}
 
 	public function updateSettings(string $uid, array $settings, bool $wait = true): array {
@@ -379,7 +448,7 @@ class Client {
 	 * @throws ClientException moteur injoignable, délai dépassé, réponse illisible, ou statut
 	 *                         HTTP ≥ 400 (le code de l'exception porte alors le statut HTTP).
 	 */
-	private function request(string $method, string $path, $body = null): array {
+	private function request(string $method, string $path, $body = null, bool $body_is_json = false): array {
 		$url = $this->base_url . $path;
 		$ch  = curl_init($url);
 
@@ -394,7 +463,10 @@ class Client {
 			CURLOPT_CONNECTTIMEOUT => min(5, $this->timeout),
 		]);
 
-		if ($body !== null) {
+		if ($body !== null && $body_is_json) {
+			// Corps déjà encodé : voir copySettings(), qui recopie du JSON reçu sans le décoder.
+			curl_setopt($ch, CURLOPT_POSTFIELDS, (string)$body);
+		} elseif ($body !== null) {
 			// JSON_PRESERVE_ZERO_FRACTION : sans lui, un 1.0 part en `1` et Meilisearch fige
 			// le type du champ sur un entier, ce qui casse les filtres de plage ultérieurs.
 			// JSON_INVALID_UTF8_SUBSTITUTE : une seule valeur mal encodée dans le fonds faisait
@@ -433,6 +505,8 @@ class Client {
 		if ($errno !== 0) {
 			throw new ClientException("Meilisearch injoignable sur {$this->base_url} ({$error})", 0);
 		}
+
+		$this->last_response_body = is_string($response) ? $response : '';
 
 		$decoded = ($response === '' || $response === false) ? [] : json_decode($response, true);
 		if ($decoded === null && json_last_error() !== JSON_ERROR_NONE) {
