@@ -77,10 +77,11 @@ class Query {
 	public function getUnsupported(): array { return $this->unsupported; }
 
 	/**
-	 * Le plan d'exécution. Deux formes de nœud :
+	 * Le plan d'exécution. Trois formes de nœud :
 	 *
 	 *   ['type' => 'leaf', 'id' => int, 'params' => array]        une recherche Meilisearch
 	 *   ['type' => 'bool', 'must' => [], 'should' => [], 'not' => []]   une combinaison
+	 *   ['type' => 'changelog', 'mode' => string, …]              un ensemble tiré de ca_change_log
 	 */
 	public function getPlan(): ?array { return $this->plan; }
 
@@ -118,17 +119,32 @@ class Query {
 
 			case 'Zend_Search_Lucene_Search_Query_MultiTerm':
 				return $this->boolNode($query->getTerms(), $query->getSigns(), $inherited_op,
-					function ($term, $op) { return $this->leafNode([$this->clause($term, $op, false)], $op); });
+					function ($term, $op) {
+						if ($n = $this->changeLogNode((string)$term->field, (string)$term->text, $op)) { return $n; }
+						return $this->leafNode([$this->clause($term, $op, false)], $op);
+					});
 
 			case 'Zend_Search_Lucene_Search_Query_Term':
-				$clause = $this->clause($query->getTerm(), $inherited_op, false);
+				$term = $query->getTerm();
+				if ($n = $this->changeLogNode((string)$term->field, (string)$term->text, $inherited_op)) { return $n; }
+				$clause = $this->clause($term, $inherited_op, false);
 				return $clause ? $this->leafNode([$clause], $inherited_op) : null;
 
 			case 'Zend_Search_Lucene_Search_Query_Phrase':
+				$terms = $query->getTerms();
+
+				// `created:"avril 2020"` arrive ici : une date à plusieurs mots est analysée par
+				// le parseur comme une phrase. Ce n'en est pas une — il n'y a pas de texte où
+				// retrouver ces mots contigus, il y a une expression de date à interpréter.
+				if (sizeof($terms)) {
+					$texte = join(' ', array_map(function ($t) { return (string)$t->text; }, $terms));
+					if ($n = $this->changeLogNode((string)$terms[0]->field, $texte, $inherited_op)) { return $n; }
+				}
+
 				// Une phrase reste une phrase : les guillemets imposent à Meilisearch des mots
 				// contigus, exacts, sans tolérance orthographique ni complétion.
 				$clauses = [];
-				foreach ($query->getTerms() as $term) {
+				foreach ($terms as $term) {
 					if ($c = $this->clause($term, $inherited_op, true)) { $clauses[] = $c; }
 				}
 				return sizeof($clauses) ? $this->leafNode($clauses, $inherited_op) : null;
@@ -137,6 +153,7 @@ class Query {
 				// Meilisearch ne connaît pas les jokers ; il cherche déjà par préfixe sur le
 				// dernier mot. On retire l'astérisque et on le signale.
 				$pattern = $query->getPattern();
+				if ($n = $this->changeLogNode((string)$pattern->field, (string)$pattern->text, $inherited_op)) { return $n; }
 				$this->unsupported[] = 'joker « ' . $pattern->text . ' » traité comme une recherche par préfixe';
 				$clause = $this->clause($pattern, $inherited_op, false);
 				return $clause ? $this->leafNode([$clause], $inherited_op) : null;
@@ -229,6 +246,81 @@ class Query {
 			}
 			$node['must'][] = $this->leafNode($clauses, self::OP_AND);
 		}
+	}
+
+	# -------------------------------------------------------
+	# Historique : `created:` et `modified:`
+	# -------------------------------------------------------
+
+	/**
+	 * Le mode d'interrogation de l'historique visé par un champ, ou null si ce n'en est pas un.
+	 *
+	 * `created` et `modified` ne nomment aucun champ indexé : ce sont des points d'accès
+	 * spéciaux, qui interrogent `ca_change_log` — quand la fiche a-t-elle été créée, quand
+	 * a-t-elle été touchée, et par qui. SqlSearch2 les détourne avant toute recherche dans son
+	 * index (`_processQueryTerm` → `_processQueryChangeLog`) ; faute de quoi ils partent vers le
+	 * moteur comme un attribut ordinaire, n'y trouvent rien, et la recherche rend zéro sans que
+	 * personne ne sache pourquoi. C'est ce que faisait le connecteur (ZD-8266).
+	 *
+	 * On accepte l'anglais — la syntaxe du socle — et le français, qui est ce que l'interface
+	 * montre à l'usager : `_t('created')` rend « créé », `_t('modified')` rend « modifié ».
+	 * Les deux formes françaises sont aussi écrites en dur, parce que `_t()` dépend de la langue
+	 * chargée dans le processus courant et qu'une recherche lancée depuis une tâche de fond ne
+	 * doit pas répondre autrement que la même recherche lancée depuis l'interface.
+	 */
+	private function changeLogMode(string $field): ?string {
+		$field = trim($field);
+		if ($field === '') { return null; }
+
+		$elements = explode('.', mb_strtolower($field));
+		$tete     = $elements[0];
+
+		$created  = ['created', 'créé', 'créée'];
+		$modified = ['modified', 'modifié', 'modifiée'];
+		if (function_exists('_t')) {
+			$created[]  = mb_strtolower(_t('created'));
+			$modified[] = mb_strtolower(_t('modified'));
+		}
+
+		if (in_array($tete, $created, true))  { return 'created'; }
+		if (in_array($tete, $modified, true)) { return 'modified'; }
+		return null;
+	}
+
+	/**
+	 * Le nœud d'une interrogation de l'historique, ou null si le champ n'en est pas une.
+	 *
+	 * La reconnaissance s'arrête ici. Analyser la date, retrouver l'usager, interroger
+	 * `ca_change_log` : tout cela demande la base, et le plan n'y touche pas — il décrit ce qui
+	 * est demandé, le connecteur l'exécute. C'est la même séparation que pour les feuilles, qui
+	 * décrivent une recherche Meilisearch sans la lancer.
+	 *
+	 * @param string $field champ tel qu'il a été tapé : `created`, `modified.lpelletier`, `modifié.3`
+	 * @param string $text  ce qui suit le deux-points : une expression de date
+	 */
+	private function changeLogNode(string $field, string $text, string $op): ?array {
+		if (!($mode = $this->changeLogMode($field))) { return null; }
+
+		// Un joker n'a pas de sens sur une date ; SqlSearch2 le retire aussi. Les guillemets
+		// sont, eux, déjà consommés par le parseur — sauf par la voie de repli sur la chaîne.
+		$text = str_replace(['*', '"', '“', '”'], ' ', $text);
+		$text = trim(preg_replace('!\s+!u', ' ', $text));
+		if ($text === '') { return null; }
+
+		$elements = explode('.', mb_strtolower(trim($field)));
+
+		// Les termes de l'historique ne rejoignent pas $this->clauses : ce ne sont pas des mots
+		// cherchés dans l'index, et les y verser les ferait ressortir en surbrillance des
+		// résultats — « 2020 » surligné dans un titre parce qu'on a cherché created:2020.
+
+		return [
+			'type'      => 'changelog',
+			'mode'      => $mode,
+			'text'      => $text,
+			// Ce qui suit le point : un identifiant de connexion, ou un numéro d'usager.
+			'qualifier' => (isset($elements[1]) && ($elements[1] !== '')) ? $elements[1] : null,
+			'op'        => $op,
+		];
 	}
 
 	# -------------------------------------------------------
@@ -436,6 +528,14 @@ class Query {
 		if (preg_match_all('!([A-Za-z0-9_./\\\\|]+):("([^"]*)"|\S+)!', $expression, $matches, PREG_SET_ORDER)) {
 			foreach ($matches as $m) {
 				$value    = isset($m[3]) && $m[3] !== '' ? $m[3] : trim($m[2], '"');
+
+				// `created:` et `modified:` ne se cherchent pas dans l'index, ici non plus.
+				if ($historique = $this->changeLogNode($m[1], $value, self::OP_AND)) {
+					$node['must'][] = $historique;
+					$expression = str_replace($m[0], ' ', $expression);
+					continue;
+				}
+
 				$wildcard = (strpos($value, '*') !== false);
 				$value    = str_replace('*', '', $value);
 				if ($value === '') { $expression = str_replace($m[0], ' ', $expression); continue; }

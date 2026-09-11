@@ -37,6 +37,11 @@ require_once(__CA_LIB_DIR__ . '/Plugins/SearchEngine/Meilisearch/Document.php');
 require_once(__CA_LIB_DIR__ . '/Plugins/SearchEngine/Meilisearch/Query.php');
 require_once(__CA_LIB_DIR__ . '/Plugins/SearchEngine/Meilisearch/Facets.php');
 
+// `created:` et `modified:` s'interrogent contre l'historique, pas contre l'index :
+// il faut savoir lire une expression de date et retrouver un usager par son identifiant.
+require_once(__CA_LIB_DIR__ . '/Parsers/TimeExpressionParser.php');
+require_once(__CA_MODELS_DIR__ . '/ca_users.php');
+
 class WLPlugSearchEngineMeilisearch extends BaseSearchPlugin implements IWLPlugSearchEngine {
 	# -------------------------------------------------------
 	/** @var Meilisearch\Config */
@@ -265,7 +270,7 @@ class WLPlugSearchEngineMeilisearch extends BaseSearchPlugin implements IWLPlugS
 				Meilisearch\Log::warn("Requête « {$search_expression} » : {$note}");
 			}
 
-			$hits = $this->execute($index, $query);
+			$hits = $this->execute($index, $subject_tablenum, $query);
 		} catch (Meilisearch\ClientException $e) {
 			Meilisearch\Log::error("Recherche « {$search_expression} » sur {$index} : " . $e->getMessage());
 
@@ -307,36 +312,39 @@ class WLPlugSearchEngineMeilisearch extends BaseSearchPlugin implements IWLPlugS
 	 *
 	 * @return array identifiants, dans l'ordre de pertinence de la première feuille positive
 	 */
-	private function execute(string $index, Meilisearch\Query $query): array {
+	private function execute(string $index, int $subject_tablenum, Meilisearch\Query $query): array {
 		if ($query->isMatchAll()) { return $this->allIds($index); }
 
 		$plan = $query->getPlan();
 		if (!$plan) { return []; }
 
+		// Un plan peut n'avoir aucune feuille et restreindre quand même : `created:2020` ne
+		// demande rien au moteur, tout à l'historique. On ne rend donc plus zéro d'emblée.
 		$searches = $query->getLeafSearches();
-		if (!sizeof($searches)) { return []; }
+		$results  = [];
 
-		$this->warnAboutUnindexedFields($index, $searches);
+		if (sizeof($searches)) {
+			$this->warnAboutUnindexedFields($index, $searches);
 
-		if (sizeof($searches) === 1) {
-			$params  = reset($searches);
-			$results = [key($searches) => $this->extractIds($this->getClient()->search($index, $params))];
-		} else {
-			$queries = [];
-			$ids     = [];
-			foreach ($searches as $leaf_id => $params) {
-				$queries[] = array_merge(['indexUid' => $index], $params);
-				$ids[]     = $leaf_id;
-			}
-			$responses = $this->getClient()->multiSearch($queries);
+			if (sizeof($searches) === 1) {
+				$params  = reset($searches);
+				$results = [key($searches) => $this->extractIds($this->getClient()->search($index, $params))];
+			} else {
+				$queries = [];
+				$ids     = [];
+				foreach ($searches as $leaf_id => $params) {
+					$queries[] = array_merge(['indexUid' => $index], $params);
+					$ids[]     = $leaf_id;
+				}
+				$responses = $this->getClient()->multiSearch($queries);
 
-			$results = [];
-			foreach ($ids as $rang => $leaf_id) {
-				$results[$leaf_id] = $this->extractIds($responses[$rang] ?? []);
+				foreach ($ids as $rang => $leaf_id) {
+					$results[$leaf_id] = $this->extractIds($responses[$rang] ?? []);
+				}
 			}
 		}
 
-		return $this->evaluate($index, $plan, $results);
+		return $this->evaluate($index, $subject_tablenum, $plan, $results);
 	}
 	# -------------------------------------------------------
 	/**
@@ -354,20 +362,21 @@ class WLPlugSearchEngineMeilisearch extends BaseSearchPlugin implements IWLPlugS
 	 * L'ordre de pertinence est celui du premier ensemble non vide rencontré ; les opérations
 	 * ensemblistes de PHP préservent l'ordre de leur premier opérande.
 	 */
-	private function evaluate(string $index, array $node, array $results): array {
-		if ($node['type'] === 'leaf') { return $results[$node['id']] ?? []; }
+	private function evaluate(string $index, int $subject_tablenum, array $node, array $results): array {
+		if ($node['type'] === 'leaf')      { return $results[$node['id']] ?? []; }
+		if ($node['type'] === 'changelog') { return $this->changeLogIds($subject_tablenum, $node); }
 
 		$resultat = null;
 
 		foreach ($node['must'] as $enfant) {
-			$ids = $this->evaluate($index, $enfant, $results);
+			$ids = $this->evaluate($index, $subject_tablenum, $enfant, $results);
 			$resultat = ($resultat === null) ? $ids : array_values(array_intersect($resultat, $ids));
 		}
 
 		if (sizeof($node['should'])) {
 			$union = [];
 			foreach ($node['should'] as $enfant) {
-				$union = array_merge($union, $this->evaluate($index, $enfant, $results));
+				$union = array_merge($union, $this->evaluate($index, $subject_tablenum, $enfant, $results));
 			}
 			$union = array_values(array_unique($union));
 
@@ -377,11 +386,202 @@ class WLPlugSearchEngineMeilisearch extends BaseSearchPlugin implements IWLPlugS
 		if (sizeof($node['not'])) {
 			if ($resultat === null) { $resultat = $this->allIds($index); }
 			foreach ($node['not'] as $enfant) {
-				$resultat = array_values(array_diff($resultat, $this->evaluate($index, $enfant, $results)));
+				$resultat = array_values(array_diff($resultat, $this->evaluate($index, $subject_tablenum, $enfant, $results)));
 			}
 		}
 
 		return $resultat === null ? [] : $resultat;
+	}
+	# -------------------------------------------------------
+	/**
+	 * Les identifiants que l'historique désigne, pour un nœud `created:` / `modified:`.
+	 *
+	 * Transposition de `SqlSearch2::_processQueryChangeLog()`, dont la sémantique est reprise au
+	 * mot près : c'est la référence, et l'objectif du connecteur est de l'égaler.
+	 *
+	 *   – `created:` — une entrée d'insertion (`changetype = 'I'`) portant sur la table sujet ;
+	 *   – `modified:` — les entrées de mise à jour (`'U'`) portant sur la table sujet, *union*
+	 *     les entrées dont la fiche n'est que sujet indirect, par `ca_change_log_subjects`.
+	 *     Cette seconde branche n'est pas un raffinement : modifier une étiquette, une valeur
+	 *     attributaire ou une relation n'écrit rien dans `ca_objects`, et sans elle « modifié
+	 *     cette année » ne rendrait presque rien. Elle ne filtre pas le type de changement,
+	 *     comme chez SqlSearch2 ;
+	 *   – `modified.lpelletier:` — restriction à un usager. Les blancs d'un identifiant de
+	 *     connexion se tapent avec un souligné.
+	 *
+	 * Les fiches supprimées ne sont pas écartées ici. Elles le sont par les filtres de résultat
+	 * (`deleted = 0`) que SearchEngine pose sur toute recherche, et qui s'appliquent aussi bien
+	 * aux identifiants venus de l'historique qu'à ceux venus du moteur — un identifiant dont la
+	 * fiche a disparu de la table ne survit pas au `WHERE … IN (…)`. Même chemin que SqlSearch2.
+	 *
+	 * Deux écarts assumés avec le socle, tous deux du côté du dire :
+	 *
+	 *   – un numéro d'usager est accepté tel quel (`modified.3:2026`). Chez SqlSearch2, le test
+	 *     `is_int()` porte sur un fragment de chaîne et ne peut jamais être vrai : le numéro y
+	 *     part en recherche d'identifiant de connexion, n'en trouve aucun, et la restriction
+	 *     disparaît en silence. La forme documentée est rétablie plutôt que recopiée ;
+	 *   – un usager introuvable est journalisé. Le socle laisse alors tomber la restriction sans
+	 *     rien dire, ce qui rend « modifié par X » comme « modifié par n'importe qui » — on garde
+	 *     ce résultat, pour ne pas diverger, mais on le dit dans le journal.
+	 *
+	 * @return array identifiants, du plus récemment touché au plus ancien. Une recherche par
+	 * date n'a pas d'ordre de pertinence — SqlSearch2 rend l'ordre où la base a servi les lignes,
+	 * qui ne veut rien dire ; le plus récent d'abord en veut un, et ne coûte rien de plus.
+	 */
+	private function changeLogIds(int $subject_tablenum, array $node): array {
+		$started = microtime(true);
+
+		$champ = $node['mode'] . (($node['qualifier'] !== null) ? '.' . $node['qualifier'] : '');
+
+		// Le parseur du socle, celui-là même qu'emploie SqlSearch2 : il lit « 2020 », « avril
+		// 2020 », « 12/4/2020 », « hier », dans la langue de l'instance.
+		$tep = new TimeExpressionParser();
+		if (!$tep->parse($node['text'])) {
+			// Le cas courant : `modified.login:lpelletier`, où l'usager a été mis après le
+			// deux-points. La syntaxe du socle veut l'inverse — `modified.lpelletier:2026` —
+			// parce que ce qui suit le deux-points est toujours une date.
+			Meilisearch\Log::warn(
+				"Recherche « {$champ}:{$node['text']} » : « {$node['text']} » ne se lit pas comme une date, "
+				. "la recherche ne rend rien. Après le deux-points on attend une date (2026, « avril 2020 », "
+				. "22/4/2020) ; un usager se pose avant, comme dans modified.lpelletier:2026."
+			);
+			return [];
+		}
+		$range = $tep->getUnixTimestamps();
+		$start = (int)$range['start'];
+		$end   = (int)$range['end'];
+
+		$user_sql = '';
+		if (($qualifier = $node['qualifier']) !== null) {
+			if (($user_id = $this->userIdForQualifier($qualifier)) === null) {
+				Meilisearch\Log::warn("Recherche « {$champ}:{$node['text']} » : usager « {$qualifier} » inconnu ; la restriction par usager n'est pas appliquée (comportement du socle).");
+			} else {
+				$user_sql = ' AND (ccl.user_id = ' . (int)$user_id . ')';
+			}
+		}
+
+		// [identifiant => date de la trace la plus récente], pour trier ensuite.
+		$dates = [];
+
+		if ($node['mode'] === 'created') {
+			$this->collectChangeLog($dates, "
+				SELECT ccl.logged_row_id AS row_id, MAX(ccl.log_datetime) AS d
+				FROM ca_change_log ccl
+				WHERE
+					(ccl.log_datetime BETWEEN ? AND ?)
+					AND (ccl.logged_table_num = ?)
+					AND (ccl.changetype = 'I')
+					{$user_sql}
+				GROUP BY ccl.logged_row_id", [$start, $end, $subject_tablenum]);
+		} else {
+			// La fiche elle-même a été enregistrée.
+			$this->collectChangeLog($dates, "
+				SELECT ccl.logged_row_id AS row_id, MAX(ccl.log_datetime) AS d
+				FROM ca_change_log ccl
+				WHERE
+					(ccl.log_datetime BETWEEN ? AND ?)
+					AND (ccl.logged_table_num = ?)
+					AND (ccl.changetype = 'U')
+					{$user_sql}
+				GROUP BY ccl.logged_row_id", [$start, $end, $subject_tablenum]);
+
+			// La fiche n'est que sujet du changement : étiquette, valeur attributaire, relation.
+			if ($fenetre = $this->changeLogIdWindow($start, $end)) {
+				$this->collectChangeLog($dates, "
+					SELECT ccls.subject_row_id AS row_id, MAX(ccl.log_datetime) AS d
+					FROM ca_change_log_subjects ccls
+					STRAIGHT_JOIN ca_change_log ccl ON ccl.log_id = ccls.log_id
+					WHERE
+						(ccls.log_id BETWEEN ? AND ?)
+						AND (ccls.subject_table_num = ?)
+						AND (ccl.log_datetime BETWEEN ? AND ?)
+						{$user_sql}
+					GROUP BY ccls.subject_row_id",
+					[$fenetre[0], $fenetre[1], $subject_tablenum, $start, $end]);
+			}
+		}
+
+		arsort($dates, SORT_NUMERIC);
+		$ids = array_keys($dates);
+
+		Meilisearch\Log::debug(sprintf(
+			'Historique %s:%s → %d identifiant(s) en %.1f ms',
+			$champ, $node['text'], sizeof($ids), (microtime(true) - $started) * 1000
+		));
+
+		return $ids;
+	}
+	# -------------------------------------------------------
+	/**
+	 * Le numéro d'usager désigné par ce qui suit le point dans `modified.xxx:`, ou null.
+	 *
+	 * Un numéro est pris pour tel ; sinon c'est un identifiant de connexion, cherché aussi avec
+	 * les soulignés rendus à leurs blancs — un identifiant de connexion peut en contenir, une
+	 * expression de recherche non.
+	 */
+	private function userIdForQualifier(string $qualifier): ?int {
+		if (preg_match('!^[0-9]+$!', $qualifier)) { return (int)$qualifier; }
+
+		$t_user = new ca_users();
+		if (
+			$t_user->load(['user_name' => $qualifier])
+			||
+			((strpos($qualifier, '_') !== false) && $t_user->load(['user_name' => str_replace('_', ' ', $qualifier)]))
+		) {
+			return (int)$t_user->getPrimaryKey();
+		}
+		return null;
+	}
+	# -------------------------------------------------------
+	/**
+	 * Verse le résultat d'une requête d'historique dans [identifiant => date la plus récente].
+	 */
+	private function collectChangeLog(array &$dates, string $sql, array $params): void {
+		$qr = $this->db->query($sql, $params);
+		while ($qr->nextRow()) {
+			if (!($id = (int)$qr->get('row_id'))) { continue; }
+			$d = (int)$qr->get('d');
+			if (!isset($dates[$id]) || ($d > $dates[$id])) { $dates[$id] = $d; }
+		}
+	}
+	# -------------------------------------------------------
+	/**
+	 * L'intervalle de `log_id` qui contient à coup sûr toutes les traces de l'intervalle de
+	 * dates — ou null s'il n'y en a aucune.
+	 *
+	 * **C'est ce qui rend `modified:` utilisable sur un gros fonds.** `ca_change_log_subjects`
+	 * ne porte pas de date : la seule façon d'y appliquer un intervalle est de passer par
+	 * `ca_change_log`. Écrite comme chez SqlSearch2 — jointure dirigée par la date — la requête
+	 * fait parcourir au serveur toutes les traces de la période, puis va chercher les sujets une
+	 * à une. Sur ce fonds, 26 millions de traces pour l'année 2026 : 23 secondes, quand
+	 * `max_execution_time` du serveur web en accorde 30 pour toute la requête HTTP. La recherche
+	 * serait rétablie et inutilisable.
+	 *
+	 * Bornée en `log_id`, la même question se lit dans le seul index `i_log_plus`
+	 * (log_id, subject_table_num, subject_row_id) sans jamais ouvrir la table : 7 secondes au
+	 * lieu de 23, pour un résultat identique — 39 379 fiches dans les deux cas.
+	 *
+	 * **La borne ne suppose rien.** On ne postule pas que `log_id` croît avec `log_datetime` —
+	 * ce serait vrai en pratique et faux le jour d'une reprise de données. On demande au serveur
+	 * le plus petit et le plus grand `log_id` *parmi les traces de l'intervalle* : par
+	 * construction, toute trace de l'intervalle a son `log_id` entre les deux. La fenêtre est un
+	 * sur-ensemble démontré, et la condition de date reste posée dans la requête, qui décide
+	 * seule de ce qui est retenu.
+	 *
+	 * @return array|null [borne basse, borne haute]
+	 */
+	private function changeLogIdWindow(int $start, int $end): ?array {
+		$qr = $this->db->query(
+			'SELECT MIN(log_id) AS a, MAX(log_id) AS b FROM ca_change_log WHERE log_datetime BETWEEN ? AND ?',
+			[$start, $end]
+		);
+		if (!$qr->nextRow()) { return null; }
+
+		$a = $qr->get('a');
+		$b = $qr->get('b');
+		if ($a === null || $b === null) { return null; }   // aucune trace dans l'intervalle
+
+		return [(int)$a, (int)$b];
 	}
 	# -------------------------------------------------------
 	/**
