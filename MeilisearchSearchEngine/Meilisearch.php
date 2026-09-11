@@ -363,7 +363,15 @@ class WLPlugSearchEngineMeilisearch extends BaseSearchPlugin implements IWLPlugS
 	 * ensemblistes de PHP préservent l'ordre de leur premier opérande.
 	 */
 	private function evaluate(string $index, int $subject_tablenum, array $node, array $results): array {
-		if ($node['type'] === 'leaf')      { return $results[$node['id']] ?? []; }
+		if ($node['type'] === 'leaf') {
+			// Une feuille qui porte un attribut absent de l'index ne peut rien rendre. Quand cet
+			// attribut désigne la clé primaire d'une table liée, la question a pourtant un sens et
+			// une réponse : on va la chercher dans la table de relation. Voir relatedIds().
+			$ids = $this->relatedIds($index, $subject_tablenum, $node);
+			if ($ids !== null) { return $ids; }
+
+			return $results[$node['id']] ?? [];
+		}
 		if ($node['type'] === 'changelog') { return $this->changeLogIds($subject_tablenum, $node); }
 
 		$resultat = null;
@@ -391,6 +399,115 @@ class WLPlugSearchEngineMeilisearch extends BaseSearchPlugin implements IWLPlugS
 		}
 
 		return $resultat === null ? [] : $resultat;
+	}
+	# -------------------------------------------------------
+	/**
+	 * Les identifiants qu'une recherche par clé de fiche liée désigne — `ca_collections.collection_id:123`
+	 * lancé sur les objets, `ca_storage_locations.location_id:6120` lancé sur les opérations.
+	 *
+	 * POURQUOI CE CHEMIN EXISTE
+	 *
+	 * L'inspecteur du socle fabrique exactement ces requêtes : le lien « N liés à … » vaut
+	 * `caSearchLink(…, <table>.<clé>:<id>)` (displayHelpers.php:1585). Or une telle clé n'est
+	 * indexée que si `search_indexing.conf` la déclare pour la table cherchée, ce qu'il ne fait
+	 * que pour une minorité de couples : relevé sur comodo au 11/09/2026, 13 couples sur 36 —
+	 * `ca_objects` les déclare tous, `ca_movements` et `ca_storage_locations` aucun. Les autres
+	 * liens rendent zéro, en silence, alors que la relation existe en base. Constaté sur une
+	 * demande de versement portant 36 opérations : le lien n'en rendait aucune.
+	 *
+	 * Le réflexe serait de compléter `search_indexing.conf`. C'est un piège, et il est mesuré :
+	 * déclarer une clé la fait entrer dans le graphe de dépendances de l'indexeur, si bien que
+	 * l'enregistrement de la fiche liée réindexe TOUTES les fiches qui la citent — et
+	 * `disable_out_of_process_search_indexing = 1` (app.conf:893) rend cette réindexation
+	 * SYNCHRONE, dans la requête web de l'usager. Enregistrer l'entité « SRA de Montpellier »
+	 * réindexerait 7 143 opérations avant de rendre la main ; un centre de conservation, 2 800.
+	 * C'est le mode de défaillance déjà rencontré le 29/08/2026 puis le 11/09/2026.
+	 *
+	 * D'où ce chemin : la clé n'entre pas dans l'index, elle ne pèse rien, et elle n'est
+	 * consultée que si quelqu'un la demande nommément. Un identifiant ne changeant jamais, il
+	 * n'y a rien à tenir à jour — la relation elle-même est déjà réindexée des deux côtés quand
+	 * elle est créée ou défaite.
+	 *
+	 * QUAND CE CHEMIN PREND LA MAIN
+	 *
+	 * Seulement si l'attribut visé est ABSENT de l'index, c'est-à-dire quand la voie Meilisearch
+	 * ne peut structurellement rendre que zéro. Les couples que `search_indexing.conf` déclare
+	 * gardent leur comportement au bit près — ce qui compte, car l'index n'a pas la même
+	 * sémantique : il range aussi les ANCÊTRES d'une fiche hiérarchique (chercher un
+	 * département rend les objets de ses communes), là où la table de relation ne connaît que
+	 * le lien direct. On ne remplace donc rien ; on comble.
+	 *
+	 * @return array|null identifiants, ou null si le nœud n'est pas une recherche par clé liée
+	 * — auquel cas l'appelant reprend la voie normale.
+	 */
+	private function relatedIds(string $index, int $subject_tablenum, array $node): ?array {
+		$scope = (string)($node['scope'] ?? '');
+		if ($scope === '' || $scope === '*') { return null; }
+
+		// L'attribut est-il vraiment absent de l'index ? Si le relevé a échoué, on ne présume
+		// rien et on laisse la voie normale : mieux vaut le comportement d'hier qu'un détour
+		// pris sur une information incertaine.
+		$fields = $this->indexFields($index);
+		if (!sizeof($fields) || in_array($scope, $fields, true)) { return null; }
+
+		// `ca_collections__collection_id`, éventuellement suivi d'un code de type de relation
+		// que l'on ignore ici : restreindre au type demanderait de le résoudre, et le socle ne
+		// fabrique pas de tels liens.
+		$parts = explode('__', $scope);
+		if (sizeof($parts) < 2) { return null; }
+		$table = $parts[0];
+		$field = $parts[1];
+
+		if (!($t_rel = \Datamodel::getInstanceByTableName($table, true))) { return null; }
+		if ($field !== $t_rel->primaryKey()) { return null; }
+
+		if (!($t_subject = \Datamodel::getInstanceByTableNum($subject_tablenum, true))) { return null; }
+		$subject_table = $t_subject->tableName();
+		if ($subject_table === $table) { return null; }   // auto-relation : colonnes gauche/droite, pas ce cas
+
+		// Une seule valeur, exacte, numérique. `collection_id:abc` n'a pas de sens, et une
+		// troncature (`collection_id:12*`) encore moins : on décline plutôt que d'inventer.
+		$clauses = $node['clauses'] ?? [];
+		if (sizeof($clauses) !== 1) { return null; }
+		$texte = (string)($clauses[0]['text'] ?? '');
+		if (empty($clauses[0]['exact']) || !preg_match('!^[0-9]+$!', $texte)) { return null; }
+		$row_id = (int)$texte;
+		if ($row_id <= 0) { return null; }
+
+		// La table de relation, telle que le modèle la connaît — jamais reconstituée par
+		// concaténation : le parc porte les deux ordres de nommage (`ca_places_x_collections`
+		// mais `ca_collections_x_storage_locations`).
+		$path = \Datamodel::getPath($subject_table, $table);
+		if (!is_array($path) || sizeof($path) !== 3) { return null; }
+		$etapes   = array_keys($path);
+		$rel_table = $etapes[1];
+		if (!($t_link = \Datamodel::getInstanceByTableName($rel_table, true))) { return null; }
+
+		$subject_key = $t_subject->primaryKey();
+		if (!$t_link->hasField($subject_key) || !$t_link->hasField($field)) { return null; }
+
+		$started = microtime(true);
+		try {
+			$qr = $this->db->query(
+				"SELECT DISTINCT l.{$subject_key} FROM {$rel_table} l WHERE l.{$field} = ?", [$row_id]
+			);
+		} catch (\Exception $e) {
+			Meilisearch\Log::error("Recherche par clé liée {$scope}:{$row_id} sur {$index} : " . $e->getMessage());
+			return null;
+		}
+
+		$ids = [];
+		while ($qr->nextRow()) { $ids[] = (int)$qr->get($subject_key); }
+
+		Meilisearch\Log::debug(sprintf(
+			'Clé liée %s:%d sur %s → %d identifiant(s) via %s en %.1f ms',
+			$scope, $row_id, $index, sizeof($ids), $rel_table, (microtime(true) - $started) * 1000
+		));
+
+		// Les fiches supprimées ne sont pas écartées ici : les filtres de résultat posés par
+		// SearchEngine (`deleted = 0`) s'en chargent, comme pour les identifiants venus de
+		// l'historique. Même chemin que changeLogIds().
+		return $ids;
 	}
 	# -------------------------------------------------------
 	/**
@@ -606,13 +723,28 @@ class WLPlugSearchEngineMeilisearch extends BaseSearchPlugin implements IWLPlugS
 		if (!sizeof($this->indexFields($index))) { return; }
 
 		foreach (array_keys($vises) as $attribut) {
-			if (!in_array($attribut, self::$index_fields[$index], true)) {
-				Meilisearch\Log::warn(
-					"Recherche sur « {$attribut} » dans {$index} : aucun document ne porte cet attribut — "
-					. "champ absent de search_indexing.conf, ou jamais rempli. La recherche ne rendra rien."
-				);
-			}
+			if (in_array($attribut, self::$index_fields[$index], true)) { continue; }
+
+			// Une clé de fiche liée absente de l'index n'est pas une impasse : relatedIds() la
+			// résout dans la table de relation. L'annoncer comme sans résultat serait faux.
+			if ($this->looksLikeRelatedKey($attribut)) { continue; }
+
+			Meilisearch\Log::warn(
+				"Recherche sur « {$attribut} » dans {$index} : aucun document ne porte cet attribut — "
+				. "champ absent de search_indexing.conf, ou jamais rempli. La recherche ne rendra rien."
+			);
 		}
+	}
+	# -------------------------------------------------------
+	/**
+	 * L'attribut désigne-t-il la clé primaire d'une table du modèle ? Test de forme seulement,
+	 * sans la base : il ne sert qu'à choisir ce qu'on journalise.
+	 */
+	private function looksLikeRelatedKey(string $attribut): bool {
+		$parts = explode('__', $attribut);
+		if (sizeof($parts) < 2) { return false; }
+		if (!($t = \Datamodel::getInstanceByTableName($parts[0], true))) { return false; }
+		return ($parts[1] === $t->primaryKey());
 	}
 	# -------------------------------------------------------
 	/**
