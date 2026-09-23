@@ -492,6 +492,26 @@ class Query {
 
 		$field = str_replace('\\/', '/', $field);
 
+		// **Un nom de table employé seul ne restreint rien : il vaut recherche libre.**
+		// `ca_entities:CHADEFAUX` cherche « CHADEFAUX » dans toute la fiche, il ne cherche pas
+		// un attribut nommé `ca_entities` — qui n'existe dans aucun document.
+		//
+		// C'est ce que fait le socle, vérifié dans SqlSearch2.php ligne 595 : la résolution du
+		// point d'accès n'est tentée que si `explode('.', $ap_spec)` rend AU MOINS DEUX parties.
+		// Pour un nom de table nu le bloc entier est sauté, `$fld_limit_sql` reste nul, et la
+		// recherche porte sur tous les champs de la table sujet.
+		//
+		// Sans cette ligne le connecteur rendait zéro sur les huit tables mesurées, là où la
+		// recherche par libellé rendait des résultats : ca_objects 46, ca_storage_locations
+		// 3 787, ca_places 1 858. Beaucoup de code maison s'appuie sur cette forme — le
+		// contrôleur SGA y résout la Direction Inrap, et ne pouvait donc JAMAIS l'écrire
+		// (ticket 8045). Un champ nu qui n'est pas une table garde le comportement décrit
+		// plus bas : il n'est rattaché à rien, comme dans le socle.
+		if (strpos($field, '.') === false && strpos($field, '|') === false
+		    && \Datamodel::getTableNum($field)) {
+			return null;
+		}
+
 		// **Un champ tapé sans sa table n'est rattaché à rien, et c'est voulu.** SqlSearch2 ne le
 		// résout pas davantage : `parent_id:6` et `code_eglise:05R1000` y rendent zéro, là où
 		// `ca_objects.parent_id:6` rend 26. Le rattacher à la table sujet a été essayé — il rendait
