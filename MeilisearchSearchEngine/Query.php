@@ -68,8 +68,41 @@ class Query {
 
 		// Repli sur la chaîne quand l'arbre est absent (quickSearch, appels directs).
 		if ($this->plan === null) {
-			$this->plan = $this->fromString($search_expression);
+			if (self::expressionNegates($search_expression)) {
+				// Le parseur du socle rend un arbre vide pour « NOT X » et « NOT (A AND B) », et le
+				// repli ci-dessous efface les NOT : il chercherait X, l'inverse exact de la demande
+				// (F192). Zéro, dit au journal, plutôt qu'un résultat plausible et faux.
+				$this->unsupported[] = 'négation non transmise par le parseur du socle (NOT en tête ou devant une parenthèse) : la recherche ne rend rien plutôt que l\'inverse de la demande ; écrire « A AND NOT B » ou « A -B »';
+				$this->plan = ['type' => 'bool', 'must' => [], 'should' => [], 'not' => []];
+			} else {
+				$this->plan = $this->fromString($search_expression);
+			}
+		} elseif (self::expressionNegates($search_expression) && !self::planNegates($this->plan)) {
+			// « A AND (B OR NOT C) » : le parseur du socle perd « NOT C » et rend B obligatoire.
+			// Le résultat est un sous-ensemble de la réponse juste ; on le signale.
+			$this->unsupported[] = 'négation perdue par le parseur du socle : la restriction NOT n\'est pas appliquée et le résultat peut être incomplet';
 		}
+	}
+
+	/**
+	 * L'expression porte-t-elle une négation — `NOT`, ou `-` / `!` devant un terme — hors
+	 * guillemets ? Même lecture que fromString(), qui ne retire que `NOT` en majuscules.
+	 */
+	private static function expressionNegates(string $expression): bool {
+		$hors_guillemets = preg_replace('!"[^"]*"!u', ' ', $expression);
+		return (bool)preg_match('/(^|[\s(])(NOT(?=[\s(])|[-!](?=[^\s\-!]))/u', (string)$hors_guillemets);
+	}
+
+	/**
+	 * Le plan retranche-t-il quelque chose, à quelque profondeur que ce soit ?
+	 */
+	private static function planNegates(?array $node): bool {
+		if (!$node || ($node['type'] ?? null) !== 'bool') { return false; }
+		if (sizeof($node['not'])) { return true; }
+		foreach (array_merge($node['must'], $node['should']) as $enfant) {
+			if (self::planNegates($enfant)) { return true; }
+		}
+		return false;
 	}
 
 	public function isMatchAll(): bool { return $this->plan === null; }
@@ -183,7 +216,9 @@ class Query {
 	 *
 	 * @param array    $items   sous-requêtes ou termes
 	 * @param mixed    $signs   signes Zend, alignés sur $items (true exigé, null facultatif, false exclu)
-	 * @param string   $inherited_op portée héritée : sous une négation, tout est négation
+	 * @param string   $inherited_op portée héritée : sous une négation, les termes sont étiquetés
+	 *                               « exclus » (getSearchedTerms) — le rangement, lui, ne suit que
+	 *                               le signe local
 	 * @param callable $make    fabrique le nœud d'un sous-élément, appelée avec ($item, $op)
 	 */
 	private function boolNode(array $items, $signs, string $inherited_op, callable $make): ?array {
@@ -197,7 +232,14 @@ class Query {
 
 			if (!($child = $make($item, $op))) { continue; }
 
-			$node[$this->bucketFor($op)][] = $child;
+			// **Le rangement ne dépend que du signe local.** La portée héritée ne sert qu'à
+			// étiqueter les termes (un terme sous une négation n'est pas « cherché », voir
+			// getSearchedTerms()) ; elle ne doit pas décider du seau. Sinon la négation compte
+			// deux fois : dans « metal AND NOT (bronze OR fer) », bronze et fer étaient rangés
+			// en « not » dans le sous-arbre, qui valait alors « tout sauf bronze et fer », puis
+			// ce sous-arbre était retranché par le parent — metal ∩ (bronze ∪ fer), l'inverse
+			// exact de la demande (F192 : 5 013 fiches au lieu de 16 944).
+			$node[$this->bucketFor($this->signToOp($sign, self::OP_AND))][] = $child;
 		}
 
 		if (!sizeof($node['must']) && !sizeof($node['should']) && !sizeof($node['not'])) { return null; }
