@@ -115,6 +115,19 @@ class Client {
 	}
 
 	/**
+	 * Description de l'index (`uid`, `primaryKey`…), ou null s'il n'existe pas. Une lecture : à
+	 * la différence de createIndex(), elle n'enfile aucune tâche dans Meilisearch.
+	 */
+	public function indexInfo(string $uid): ?array {
+		try {
+			return $this->request('GET', '/indexes/' . rawurlencode($uid));
+		} catch (ClientException $e) {
+			if ($e->getCode() === 404) { return null; }
+			throw $e;
+		}
+	}
+
+	/**
 	 * Crée l'index s'il n'existe pas. Idempotent : Meilisearch répond `index_already_exists`,
 	 * qu'on absorbe.
 	 */
@@ -255,8 +268,12 @@ class Client {
 	 * envoyé sont conservés). C'est ce qui permet l'indexation champ par champ sans relire le
 	 * document existant, là où ElasticSearch impose un aller-retour.
 	 */
-	public function updateDocuments(string $uid, array $documents, bool $wait = true): array {
-		$task = $this->request('PUT', '/indexes/' . rawurlencode($uid) . '/documents', $documents);
+	public function updateDocuments(string $uid, array $documents, bool $wait = true, ?string $primary_key = null): array {
+		// `primaryKey` ne sert que si le versement crée l'index : il porte alors la bonne clé
+		// primaire au lieu d'une clé inférée (voir createIndex()). Sur un index qui a déjà
+		// cette clé, Meilisearch l'ignore — vérifié sur 1.13.3.
+		$query = ($primary_key !== null) ? '?primaryKey=' . rawurlencode($primary_key) : '';
+		$task = $this->request('PUT', '/indexes/' . rawurlencode($uid) . '/documents' . $query, $documents);
 		if ($wait) { $this->waitForTask($task); }
 		return $task;
 	}

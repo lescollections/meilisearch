@@ -1102,7 +1102,28 @@ class WLPlugSearchEngineMeilisearch extends BaseSearchPlugin implements IWLPlugS
 			return;
 		}
 
-		// Effacement complet de l'enregistrement.
+		// **Une table de contenu sans liste de champs n'est jamais un effacement complet.**
+		//
+		// SearchIndexer::commitRowUnIndexing() appelle, pour CHAQUE fiche dépendante d'une
+		// étiquette, d'une relation ou d'un attribut qu'on supprime,
+		// removeRowIndexing(<dépendante>, <id>, <table de contenu>, null, 0, …) — « Remove existing
+		// count index and recreate » (SearchIndexer.php:1981), suivi de _doCountIndexing(). Chez
+		// SqlSearch2, cet appel n'efface que les décomptes (field_row_id = 0) de cette table de
+		// contenu (SqlSearch2.php:1315-1317). Ici, il tombait dans l'effacement complet : chaque
+		// suppression de relation effaçait le document entier des fiches liées — 128 objets et
+		// 14 entités vivants introuvables au 25/09/2026, dont les directions (F190, F203, F525).
+		//
+		// Rien à effacer ici : les attributs de la table de contenu ont déjà été vidés par
+		// l'appel ciblé qui précède (SearchIndexer.php:1963), et les décomptes, s'ils sont
+		// indexés, sont réécrits en place par _doCountIndexing() juste après. Ne rien écrire
+		// évite aussi de recréer un squelette de document pour une fiche absente de l'index.
+		if ($field_tablenum) {
+			Meilisearch\Log::debug(sprintf('désindexation partielle sans champ ignorée : %s#%d (table de contenu %d)',
+				$table, $subject_row_id, $field_tablenum));
+			return;
+		}
+
+		// Effacement complet de l'enregistrement : la fiche elle-même est désindexée.
 		unset(self::$write_buffer[$table][$subject_row_id]);
 		self::$delete_buffer[$table][] = $subject_row_id;
 	}
@@ -1124,13 +1145,14 @@ class WLPlugSearchEngineMeilisearch extends BaseSearchPlugin implements IWLPlugS
 					$this->getClient()->deleteIndex($index);
 					Meilisearch\Log::info("Index {$index} vidé");
 				}
-				unset(self::$prepared_indexes[$index]);
+				$this->forgetPreparedIndex($index, (string)Datamodel::getTableName($table_num));
 			} else {
 				foreach ($this->getClient()->listIndexes() as $index) {
 					$uid = $index['uid'] ?? null;
 					if ($uid && strpos($uid, $this->schema->prefix() . '_') === 0) {
 						$this->getClient()->deleteIndex($uid);
-						unset(self::$prepared_indexes[$uid]);
+						$table = substr($uid, strlen($this->schema->prefix() . '_'));
+						$this->forgetPreparedIndex($uid, Datamodel::getTableNum($table) ? $table : null);
 					}
 				}
 				Meilisearch\Log::info('Tous les index du préfixe « ' . $this->schema->prefix() . ' » ont été vidés');
@@ -1169,7 +1191,9 @@ class WLPlugSearchEngineMeilisearch extends BaseSearchPlugin implements IWLPlugS
 		if (!strlen($name)) { throw new ApplicationException(_t('Unknown table: %1', $table)); }
 
 		$index = $this->schema->indexName($name);
-		$this->prepareIndex($index, $name);
+		// Le réindexeur fabrique ses index lui-même (fantômes, permutation) : on vérifie tout,
+		// sans se fier aux caches.
+		$this->prepareIndex($index, $name, true);
 		return $index;
 	}
 	# -------------------------------------------------------
@@ -1279,6 +1303,15 @@ class WLPlugSearchEngineMeilisearch extends BaseSearchPlugin implements IWLPlugS
 	private function writeBuffers(): void {
 		if (!self::$write_buffer_size && !sizeof(self::$delete_buffer)) { return; }
 
+		// Une fiche supprimée (deleted = 1) n'a pas de document : ce qui lui est destiné part en
+		// suppression. Voir softDeletedIds().
+		foreach (self::$write_buffer as $table => $rows) {
+			foreach ($this->softDeletedIds($table, array_keys($rows)) as $row_id) {
+				unset(self::$write_buffer[$table][$row_id]);
+				self::$delete_buffer[$table][] = $row_id;
+			}
+		}
+
 		try {
 			foreach (self::$delete_buffer as $table => $row_ids) {
 				if (!sizeof($row_ids)) { continue; }
@@ -1307,7 +1340,7 @@ class WLPlugSearchEngineMeilisearch extends BaseSearchPlugin implements IWLPlugS
 				// PUT : ajout ou fusion. Les attributs absents du document envoyé sont
 				// conservés — c'est ce qui rend l'indexation incrémentale possible sans
 				// relire le document, contrairement à ElasticSearch.
-				$this->noteTask($this->getClient()->updateDocuments($index, $documents, false));
+				$this->noteTask($this->getClient()->updateDocuments($index, $documents, false, Meilisearch\Schema::PK));
 			}
 		} catch (Meilisearch\ClientException $e) {
 			$this->clearBuffers();
@@ -1316,6 +1349,48 @@ class WLPlugSearchEngineMeilisearch extends BaseSearchPlugin implements IWLPlugS
 		}
 
 		$this->clearBuffers();
+	}
+	# -------------------------------------------------------
+	/**
+	 * Les fiches du lot marquées supprimées en base.
+	 *
+	 * La suppression logique retire bien le document (commitRowUnIndexing, hookDeleteItem), mais
+	 * toute mise à jour ultérieure d'une fiche voisine renvoie des fragments « en place » à
+	 * toutes ses dépendantes, supprimées comprises (SearchIndexer.php:1188-1480,
+	 * updateIndexingInPlace) — et un PUT recrée le document qui n'existe plus. Constaté au
+	 * 25/09/2026 : 1 367 objets, 171 mouvements, 87 collections supprimés présents dans l'index,
+	 * en squelettes sans aucun marqueur (F198, F527). Le filtre `deleted = 0` du SQL les écarte
+	 * des résultats, mais pas des calculs faits côté moteur (tout le fonds d'une exclusion,
+	 * facettes).
+	 *
+	 * On lit la base au moment d'écrire : une requête par table et par lot. La connexion est
+	 * celle du modèle (Db partage sa connexion), une suppression en cours de transaction est
+	 * donc vue. Seul `deleted = 1` compte : une fiche que la requête ne trouve pas — créée dans
+	 * une transaction qu'on ne verrait pas — garde son document.
+	 *
+	 * @return int[] identifiants à retirer de l'index plutôt qu'à écrire
+	 */
+	private function softDeletedIds(string $table, array $row_ids): array {
+		if (!sizeof($row_ids)) { return []; }
+
+		try {
+			if (!($t = Datamodel::getInstanceByTableName($table, true)) || !$t->hasField('deleted')) { return []; }
+			$pk = $t->primaryKey();
+
+			$qr = $this->db->query(
+				"SELECT {$pk} FROM {$table} WHERE {$pk} IN (?) AND deleted = 1",
+				[array_map('intval', $row_ids)]
+			);
+			// 27/09/2026 : en ligne de commande, le dernier tampon est écrit par le destructeur, parfois après
+			// la fermeture de la base : la requête rend alors false, et l'appel qui suivait était une erreur
+			// fatale qui perdait tout le tampon (fin du lot 3.3b). Sans réponse, on écrit comme avant.
+			if (!$qr) { throw new \RuntimeException('requête sans résultat (base fermée ?)'); }
+			return array_map('intval', $qr->getAllFieldValues($pk));
+		} catch (\Throwable $e) {
+			// Sans la réponse, on écrit comme avant plutôt que de perdre l'indexation.
+			Meilisearch\Log::warn("Contrôle des fiches supprimées de {$table} impossible : " . $e->getMessage());
+			return [];
+		}
 	}
 	# -------------------------------------------------------
 	/**
@@ -1337,37 +1412,154 @@ class WLPlugSearchEngineMeilisearch extends BaseSearchPlugin implements IWLPlugS
 	}
 	# -------------------------------------------------------
 	/**
-	 * Crée l'index et pose ses réglages, une fois par processus.
+	 * Crée l'index et pose ses réglages, une fois par processus — et, d'un processus à l'autre,
+	 * seulement si c'est nécessaire.
 	 *
 	 * Les attributs filtrables se fusionnent avec l'existant au lieu de le remplacer : les
 	 * variantes de facette par type de relation sont découvertes au fil des versements
 	 * (voir declareFacetAttributes()), et un nouveau processus qui réappliquerait les seuls
 	 * réglages de base les effacerait — chaque effacement recoûtant une reconstruction des
 	 * bases de facettes.
+	 *
+	 * **Ni création ni réglage sans nécessité.** Sous PHP-FPM, chaque requête est un processus
+	 * neuf : le statique ne tenait qu'une requête, et chaque enregistrement enfilait une création
+	 * d'index vouée à l'échec (`index_already_exists`) puis un settingsUpdate, tous deux
+	 * attendus — 43 526 échecs et 43 602 réglages identiques en un mois, jusqu'à 2 s d'attente
+	 * par enregistrement (F196, F212, F478). Désormais :
+	 *
+	 *   – un cache partagé entre processus (ExternalCache du socle : Redis en production, fichier
+	 *     ailleurs) retient qu'un index est prêt, pour ces réglages-là : la clé porte leur
+	 *     empreinte, si bien qu'un changement de configuration refait la vérification ;
+	 *   – à défaut, on LIT : l'index existe-t-il, avec la bonne clé primaire ? ses réglages
+	 *     sont-ils déjà ceux qu'on poserait ? On ne crée et on ne règle que si la réponse est non.
+	 *
+	 * Si l'index disparaît pendant que le cache le dit prêt, le versement le recrée avec la bonne
+	 * clé primaire (paramètre `primaryKey` de writeBuffers()), et les réglages sont reposés au
+	 * premier processus qui ne trouve plus l'entrée — expirée, ou effacée par truncateIndex().
+	 *
+	 * @param bool $force ignorer les caches et tout vérifier (réindexeur, index fantôme)
 	 */
-	private function prepareIndex(string $index, string $table): void {
-		if (isset(self::$prepared_indexes[$index])) { return; }
+	private function prepareIndex(string $index, string $table, bool $force = false): void {
+		if (!$force && isset(self::$prepared_indexes[$index])) { return; }
 
-		$this->getClient()->createIndex($index, Meilisearch\Schema::PK);
+		$cle = $this->preparedIndexCacheKey($index, $table);
+		if (!$force && is_array($filterable = $this->sharedCacheFetch($cle))) {
+			self::$filterable_attributes[$index] = array_flip($filterable);
+			self::$prepared_indexes[$index]     = true;
+			return;
+		}
 
-		$existing = [];
+		$client = $this->getClient();
+
+		// createIndex() crée, ou répare un index créé sans clé primaire : on ne l'appelle que
+		// dans ces deux cas.
+		$info = $client->indexInfo($index);
+		if ($info === null || ($info['primaryKey'] ?? null) !== Meilisearch\Schema::PK) {
+			$client->createIndex($index, Meilisearch\Schema::PK);
+		}
+
+		$settings = [];
 		try {
-			$settings = $this->getClient()->getSettings($index);
-			$existing = is_array($settings['filterableAttributes'] ?? null) ? $settings['filterableAttributes'] : [];
+			$settings = $client->getSettings($index);
 		} catch (Meilisearch\ClientException $e) {
 			// Index tout juste créé : rien à préserver.
 		}
+		$existing = is_array($settings['filterableAttributes'] ?? null) ? $settings['filterableAttributes'] : [];
 
 		$filterable = array_values(array_unique(array_merge(
 			$this->schema->baseFilterableAttributes($table), $existing
 		)));
 
-		$this->getClient()->updateSettings($index, $this->schema->indexSettings(
-			null, $filterable, $this->ms_config->tokenizeLikeSqlSearch()
-		));
+		$voulus = $this->schema->indexSettings(null, $filterable, $this->ms_config->tokenizeLikeSqlSearch());
+		if (!self::settingsAlreadyApplied($voulus, $settings)) {
+			$client->updateSettings($index, $voulus);
+		}
 
 		self::$filterable_attributes[$index] = array_flip($filterable);
 		self::$prepared_indexes[$index]     = true;
+		$this->sharedCacheSave($cle, $filterable);
+	}
+	# -------------------------------------------------------
+	/**
+	 * Les réglages voulus sont-ils déjà en place ? La comparaison se limite aux clés que l'on
+	 * pose ; les listes se comparent comme des ensembles (Meilisearch rend les attributs triés),
+	 * les scalaires sans tenir compte du type.
+	 */
+	private static function settingsAlreadyApplied($voulu, $actuel): bool {
+		if (!is_array($voulu)) {
+			if (is_bool($voulu) || is_bool($actuel)) { return $voulu === $actuel; }
+			return is_scalar($actuel) && ((string)$voulu === (string)$actuel);
+		}
+		if (!is_array($actuel)) { return false; }
+
+		if (!sizeof($voulu) || array_is_list($voulu)) {
+			// Liste : même ensemble de valeurs.
+			if (sizeof($actuel) && !array_is_list($actuel)) { return false; }
+			$a = array_values(array_unique(array_map('strval', $voulu)));  sort($a);
+			$b = array_values(array_unique(array_map('strval', $actuel))); sort($b);
+			return $a === $b;
+		}
+
+		foreach ($voulu as $cle => $valeur) {
+			if (!array_key_exists($cle, $actuel)) { return false; }
+			if (!self::settingsAlreadyApplied($valeur, $actuel[$cle])) { return false; }
+		}
+		return true;
+	}
+	# -------------------------------------------------------
+	/**
+	 * Clé du cache partagé : l'instance Meilisearch, l'index, et l'empreinte des réglages de
+	 * base — un changement de browse.conf ou de nonSeparators() la change, et la vérification
+	 * est refaite.
+	 */
+	private function preparedIndexCacheKey(string $index, string $table): string {
+		$empreinte = md5(json_encode([
+			$this->ms_config->url(),
+			$this->schema->indexSettings(null, $this->schema->baseFilterableAttributes($table), $this->ms_config->tokenizeLikeSqlSearch()),
+		]));
+		return 'index_' . preg_replace('![^A-Za-z0-9_]+!', '_', $index) . '_' . $empreinte;
+	}
+	# -------------------------------------------------------
+	/**
+	 * Durée, en secondes, pendant laquelle un index vérifié n'est plus revérifié. Courte à
+	 * dessein : la vérification ne coûte que des lectures, et c'est ce délai qui borne le temps
+	 * qu'un index supprimé à la main passerait sans ses réglages.
+	 */
+	const PREPARED_INDEX_TTL = 600;
+
+	/**
+	 * Lecture du cache partagé. Toute panne vaut absence : on retombe sur la vérification.
+	 */
+	private function sharedCacheFetch(string $cle): ?array {
+		if (!class_exists('ExternalCache')) { return null; }
+		try {
+			$v = ExternalCache::fetch($cle, 'MeilisearchIndexes');
+			return is_array($v) ? $v : null;
+		} catch (\Throwable $e) {
+			return null;
+		}
+	}
+
+	private function sharedCacheSave(string $cle, array $filterable): void {
+		if (!class_exists('ExternalCache')) { return; }
+		try {
+			ExternalCache::save($cle, array_values($filterable), 'MeilisearchIndexes', self::PREPARED_INDEX_TTL);
+		} catch (\Throwable $e) {
+			// Sans cache, le processus suivant revérifiera : plus lent, pas faux.
+		}
+	}
+
+	/**
+	 * Oublie qu'un index est prêt, dans ce processus et dans le cache partagé.
+	 */
+	private function forgetPreparedIndex(string $index, ?string $table = null): void {
+		unset(self::$prepared_indexes[$index]);
+		if (!$table || !class_exists('ExternalCache')) { return; }
+		try {
+			ExternalCache::delete($this->preparedIndexCacheKey($index, $table), 'MeilisearchIndexes');
+		} catch (\Throwable $e) {
+			// Au pire, l'entrée expire d'elle-même.
+		}
 	}
 	# -------------------------------------------------------
 	/**
@@ -1393,11 +1585,30 @@ class WLPlugSearchEngineMeilisearch extends BaseSearchPlugin implements IWLPlugS
 		}
 		if (!sizeof($new)) { return; }
 
+		// La liste du processus peut venir du cache partagé, donc dater : d'autres processus ont
+		// pu déclarer des variantes depuis. On relit avant d'écrire — le PATCH remplace la liste,
+		// il effacerait sinon ce qu'ils ont ajouté.
+		try {
+			$settings = $this->getClient()->getSettings($index);
+			foreach ((is_array($settings['filterableAttributes'] ?? null) ? $settings['filterableAttributes'] : []) as $attribut) {
+				self::$filterable_attributes[$index][$attribut] = true;
+				unset($new[$attribut]);
+			}
+		} catch (Meilisearch\ClientException $e) {
+			// On déclare quand même : c'était le comportement d'avant.
+		}
+		if (!sizeof($new)) { return; }
+
 		self::$filterable_attributes[$index] += $new;
 
 		$this->noteTask($this->getClient()->updateSettings($index, [
 			'filterableAttributes' => array_keys(self::$filterable_attributes[$index]),
 		], false));
+
+		// Les processus suivants partiront de la liste complétée.
+		if ($table = ($documents[0][Meilisearch\Schema::TABLE] ?? null)) {
+			$this->sharedCacheSave($this->preparedIndexCacheKey($index, (string)$table), array_keys(self::$filterable_attributes[$index]));
+		}
 	}
 	# -------------------------------------------------------
 	private function clearBuffers(): void {
