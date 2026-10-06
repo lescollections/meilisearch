@@ -178,7 +178,13 @@ class WLPlugSearchEngineMeilisearch extends BaseSearchPlugin implements IWLPlugS
 			// Attendre que Meilisearch ait vraiment absorbé le lot avant de rendre la main.
 			// Coûteux, mais c'est la seule façon qu'un `rebuild-search-index` qui se termine
 			// signifie « l'index est prêt » — et que les tests soient reproductibles.
-			'waitForIndexing'       => true,
+			// 06/10/2026 : attendre en ligne de commande, pas dans une requete web. La
+			// garantie qui compte — reindexation terminee = index pret — ne vaut que pour
+			// le CLI. Dans une requete web l'attente ne servait qu'au confort « retrouvable
+			// des la page suivante », et coutait 15 s par enregistrement.
+			'waitForIndexing'       => (caIsRunFromCLI()
+				? $this->ms_config->waitForIndexingCli()
+				: $this->ms_config->waitForIndexingInWeb()),
 			// Combien de lots peuvent rester enfilés sans qu'on attende. Les versements de
 			// mi-parcours n'attendent pas — c'est le seul temps mort qu'un connecteur puisse
 			// supprimer, et il pesait 10 % d'une réindexation — mais laisser la file grossir

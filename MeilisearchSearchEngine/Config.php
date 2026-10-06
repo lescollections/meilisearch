@@ -44,6 +44,8 @@ class Config {
 		'debug'                 => 0,
 		'browse_facets'         => 1,
 		'tokenize_like_sqlsearch' => 1,
+		'wait_for_indexing_in_web' => 0,
+		'wait_for_indexing_cli' => 1,
 	];
 
 	private static $constants = [
@@ -58,6 +60,7 @@ class Config {
 		'index_prefix' => 'CA_MEILISEARCH_INDEX_PREFIX',
 		'debug'        => 'CA_MEILISEARCH_DEBUG',
 		'tokenize_like_sqlsearch' => 'CA_MEILISEARCH_TOKENIZE_LIKE_SQLSEARCH',
+		'wait_for_indexing_cli' => 'CA_MEILISEARCH_WAIT_FOR_INDEXING_CLI',
 	];
 
 	public function __construct() {
@@ -81,6 +84,26 @@ class Config {
 	public function searchLimit(): int     { return max(1, (int)$this->get('search_limit')); }
 	public function debug(): bool          { return (bool)(int)$this->get('debug'); }
 	public function browseFacets(): bool   { return (bool)(int)$this->get('browse_facets'); }
+
+	/**
+	 * Faut-il attendre, DANS UNE REQUETE WEB, que Meilisearch ait absorbe ce qu'on vient
+	 * de lui envoyer ? Non par defaut depuis le 06/10/2026 : l'attente coutait ~1,4 s par
+	 * tache, soit plus de 15 s par enregistrement sur l'instance de formation. En ligne de
+	 * commande elle reste active quoi qu'il arrive, pour qu'une reindexation terminee
+	 * signifie bien « index pret ». Poser 1 retablit l'ancien comportement.
+	 */
+	public function waitForIndexingInWeb(): bool { return (bool)(int)$this->get('wait_for_indexing_in_web'); }
+
+	/**
+	 * Faut-il attendre EN LIGNE DE COMMANDE ? Oui par defaut : c'est ce qui fait qu'un
+	 * `rebuild-search-index` termine signifie « index pret ».
+	 *
+	 * Le worker de recalcul, lui, n'a pas besoin de cette garantie et la payait cher :
+	 * 14,4 s par traitement en moyenne le 06/10/2026, verrou tenu pendant toute la duree,
+	 * jusqu'a 25 minutes de file a l'arret. Sa tache planifiee pose donc
+	 * CA_MEILISEARCH_WAIT_FOR_INDEXING_CLI=0.
+	 */
+	public function waitForIndexingCli(): bool { return (bool)(int)$this->get('wait_for_indexing_cli'); }
 
 	/**
 	 * Indexer les *tokens* de SqlSearch2 plutôt que le texte brut.
